@@ -644,14 +644,13 @@ impl ScaleTile<'_> {
         let lo = from.max(d).min(to);
         let hi = to.min(w.saturating_sub(d)).max(lo);
         let n = hi - lo;
-        if let (Some(sl), Some(sm), Some(sh), Some(ll), Some(lh), Some(o)) = (
-            s.get(lo - cx0 - d..lo - cx0 - d + n),
-            s.get(lo - cx0..lo - cx0 + n),
-            s.get(lo - cx0 + d..lo - cx0 + d + n),
-            l.get(lo - d..lo - d + n),
-            l.get(lo..lo + n),
-            out.get_mut(lo - cx0..lo - cx0 + n),
-        ) {
+        // (an empty interior can lie left of `delta`: no column there to subtract it from)
+        let (i, left) = (lo - cx0, lo.checked_sub(d));
+        if n > 0
+            && let (Some(il), Some(left)) = (i.checked_sub(d), left)
+            && let (Some(sl), Some(sm), Some(sh), Some(ll), Some(lh), Some(o)) =
+                (s.get(il..il + n), s.get(i..i + n), s.get(i + d..i + d + n), l.get(left..left + n), l.get(lo..lo + n), out.get_mut(i..i + n))
+        {
             for (((((o, &p), &a), &b), la), lb) in o.iter_mut().zip(sm).zip(sl).zip(sh).zip(ll).zip(lh) {
                 let mut v = p;
                 exchange(&mut v, p, a, rate * la[0]);

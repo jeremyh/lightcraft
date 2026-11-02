@@ -137,7 +137,7 @@ GPU samples; at most 1/255 from the CPU):
 | two ping-pong buffers + `flush` | still out of memory: **3950 MiB real use** (nvidia-smi) while lightcraft counted 1.9 GB – the driver frees dropped buffers only when the GPU is done with them |
 | **`sync` after large drops** | fixes it (3.27 GB one piece, 2.4 GB in bands) |
 | bands with halo 4·Σδ + 8 | correct but slow at small budgets; now 2·Σδ + δmax + 8 (bands vs one piece: ≤ 1/255 in a few dozen pixels, from the box blur's running sums) |
-| band budget | free device memory where it can be asked without `unsafe` (nvidia-smi; amdgpu sysfs) + own pooled buffers − 384 MB, else 2 GB |
+| band budget | free device memory where it can be asked without `unsafe` (nvidia-smi; amdgpu sysfs) + own pooled buffers − 384 MB, else 2 GB; integrated GPUs always 2 GB (an AMD APU's sysfs counts only its carve-out, see the third round) |
 
 Measured (white balance + noise reduction stage on the GPU, median of 3; CPU: colour NR only):
 
@@ -175,6 +175,37 @@ Totals, white balance + NR stage (GPU) / colour NR (CPU), before → after this 
 | CPU i7-7820HQ | 5.17 → 3.54 s | |
 
 CPU output is bit for bit the same as before; GPU output agrees with the previous GPU build to 1/255.
+
+### Third round (Ryzen 5 7545U with its Radeon 740M iGPU, Linux; 24 MP Z f NEF at ISO 6400, raw default Color 25)
+
+| Change | Result |
+|---|---|
+| CPU: each scale's four diffusion steps in one sweep (`diffuse_scale`): strips of rows, worked in tiles of 512 columns whose rows pass through two rings of `2·delta + 1` rows that stay in the core's cache; the halo (2·delta each side) is computed twice | diffusion 713 → ~210 ms over the six scales; bit for bit (`diffuse_scale_matches_four_passes`). Unlike the row bands tried before, the column tiles keep the rings small enough for the cache at delta 32 |
+| CPU: horizontal step without branches in its interior columns | part of the above (66–139 → 25–53 ms per scale) |
+| CPU: the pilot's blur from its own running sums (`BoxRows`: σ 0.8 is one 3-px box per axis), no blurred copy of the image | pilot 305 → 70 ms; bit for bit with `gaussian` (`pilot_box_rows_match_the_gaussian`) |
+| CPU: speck brake reads the rest of a pixel's border only once the ring makes it a candidate | brake 81 → 70 ms (synthetic); bit for bit (`despeck_matches_the_whole_border_version`) |
+| CPU: next-scale weights without branches; skipping `exp` where the result is certainly 0 | no measurable gain: these passes are memory-bound (~36 bytes per pixel), not `exp`-bound; the second dropped |
+| GPU: `nrcj_pilot3` sums the 3-px box itself instead of a two-pass `gaussian` into a new buffer | blur + pilot 70 → 22 ms |
+| GPU: `nrcj_dvh`, the middle vertical + horizontal step of each scale in one dispatch (a row segment and its reach in workgroup memory) | diffusion 251 → 203 ms; same result as the two kernels (`fused_diffusion_steps_match_the_separate_ones`) |
+| GPU: integrated GPUs keep the fixed 2 GB budget (`vram::free_bytes` is `None` for them, as its doc said) | the APU's sysfs reported its 2 GB carve-out less what the render held: 468 MB, so 16 bands of 267 kept rows in 603 (2.3× the work, a `sync` each). Now one piece: WB + NR stage 931 → 560 ms on its own |
+
+Totals (median of 3, JPEG export of the whole photo; main = before process V3):
+
+| | main | before this round | after |
+|---|---|---|---|
+| CPU, colour NR (`nr joint`) | 330 ms (V1) | 1276 ms | ~780 ms |
+| CPU, WB + NR stage | 574 ms | 1581 ms | 1073 ms |
+| iGPU, WB + NR stage | 159 ms | 931 ms | 491 ms |
+| CPU, whole export | 2.35 s | 3.34 s | 2.89 s |
+| iGPU, whole export | 1.76 s | 2.49 s | 2.10 s |
+
+An X-T2 RAF at ISO 6400: CPU 2.25 / 3.21 / 2.74 s, iGPU 1.68 / 2.33 / 1.98 s. CPU output is bit for bit the same as
+before this round; GPU output within 1/255 of it on all 74 renders of the comparison set (mean difference 0.00).
+
+What is left on the CPU is mostly memory traffic: six scales of next-scale weights (~50 ms each: paths, links and the
+guide's three planes through memory), the diffusion sweeps, and the noise model of the frame's tiles (55 ms).
+Computing each scale's weights inside its diffusion tile (the paths are sliding minima of the direct neighbours'
+weights, so they could be made there) would save some of that traffic at the cost of recomputing the halo.
 
 ## 5. Not part of this work
 
