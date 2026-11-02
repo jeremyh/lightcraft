@@ -850,9 +850,10 @@ fn denoise(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>, colour_noise: Option<&Joi
         let Some(p) = local::nrc_params(&plan.settings, plan.detail_scale) else { return img };
         let s = &plan.settings.detail;
         let (detail, amount) = ((s.nr_color_detail / 100.0) as f32, (s.nr_color / 100.0) as f32);
-        if let Some(out) = color_nr_joint(cx, &img, w, h, &p, detail, amount, colour_noise) {
-            return out;
-        }
+        let img = match color_nr_joint(cx, img, w, h, &p, detail, amount, colour_noise) {
+            Ok(out) => return out,
+            Err(img) => img,
+        };
         // too small for the noise samples, or not even one band fits the device: this step on the CPU
         let mut host = cx.read_rgb(&img, w, h);
         let mut d = (*plan.settings).clone();
@@ -919,22 +920,22 @@ fn band_budget_from(free: u64, pooled: u64, renders: usize) -> usize {
 #[allow(clippy::too_many_arguments)]
 fn color_nr_joint(
     cx: &mut Cx<'_>,
-    img: &Buf,
+    img: Buf,
     w: usize,
     h: usize,
     p: &local::NrcParams,
     detail: f32,
     amount: f32,
     frame_noise: Option<&JointNoise>,
-) -> Option<Buf> {
+) -> Result<Buf, Buf> {
     use lightcraft_pipeline::nrc_joint;
     let strength = nrc_joint::strength(amount);
     let brake = nrc_joint::speck_brake(amount);
     if w < 3 || h < 3 {
-        return None;
+        return Err(img);
     }
     if strength <= 0.0 {
-        return Some(cx.copy(img));
+        return Ok(img);
     }
     let n = w * h;
     let started = profiling().then(std::time::Instant::now);
@@ -945,7 +946,7 @@ fn color_nr_joint(
             let stride = nrc_joint::noise_sample_stride(n);
             let count = n.div_ceil(stride);
             let smp = cx.gpu.buffer(11 * count);
-            nrcj(cx, "nrcj_samples", count, &[count as u32, w as u32, h as u32, stride as u32], img, None, &smp);
+            nrcj(cx, "nrcj_samples", count, &[count as u32, w as u32, h as u32, stride as u32], &img, None, &smp);
             let raw: Vec<f32> = cx.read(&smp, 11 * count);
             drop(smp);
             if let Some(t) = started {
@@ -972,9 +973,9 @@ fn color_nr_joint(
     // scale's weight and path still read up to delta rows further (at most the largest delta); the
     // guide's blur and pilot reach a few rows, the speck brake two more. Hence 2·Σdelta + max delta + 10.
     let halo = plan.iter().map(|d| 2 * d.0).sum::<usize>() + plan.last().map_or(0, |d| d.0) + 10;
-    // Memory: the whole output (3 values per pixel) is held besides the input; a band then holds about
-    // 12 values per pixel (guide 3, two chroma buffers 2 + 2, paths 2, weights 2; up to 12 while the
-    // speck brake and the guide run). The budget for both together is `band_budget_from` the device memory
+    // Memory: with more than one band the whole output (3 values per pixel) is held besides the input (one
+    // band is written over the input); a band then holds about 12 values per pixel (guide 3, two chroma
+    // buffers 2 + 2, paths 3 (the transformed band's buffer, see `joint_band`), weights 2). The budget for both together is `band_budget_from` the device memory
     // free right now (where the driver can be asked, `crate::vram`); else a fixed 2 GB. One band plan at a
     // time (`BANDS`), held until the bands are done. PROTOTYPE: `NRV2_GPU_BAND_MB` overrides it.
     // (free memory asked before the lock: the first question for a device waits for the driver)
@@ -1008,23 +1009,52 @@ fn color_nr_joint(
         rows - 2 * halo
     } else {
         // not even one band with its halo fits: this stage runs on the CPU (the rest of the render stays here)
-        return None;
+        return Err(img);
     };
+    Ok(joint_bands(cx, img, w, h, &noise, brake, &plan, strength, core, halo))
+}
+
+/// The joint colour NR of `img` (`w × h`) in bands of `core` kept rows, each filtered with `halo` rows
+/// on either side (`color_nr_joint`).
+#[allow(clippy::too_many_arguments)]
+fn joint_bands(
+    cx: &mut Cx<'_>,
+    img: Buf,
+    w: usize,
+    h: usize,
+    noise: &JointNoise,
+    brake: lightcraft_pipeline::nrc_joint::SpeckBrake,
+    plan: &[(usize, f32)],
+    strength: f32,
+    core: usize,
+    halo: usize,
+) -> Buf {
+    let n = w * h;
+    if core >= h {
+        // one band: each pixel's result reads only that pixel of the image, so it is written over the image
+        // (no new buffer for the whole output)
+        let filtered = joint_band(cx, &img, w, 0, h, noise, brake, plan);
+        nrcj(cx, "nrcj_recon_in", n, &[n as u32, strength.to_bits()], &filtered, None, &img);
+        drop(filtered);
+        cx.sync();
+        return img;
+    }
+    // bands: a band's halo reads rows the band before it has filtered, so the output is a buffer of its own
     let out = cx.gpu.buffer(3 * n);
     let mut y0 = 0;
     while y0 < h {
-        let y1 = (y0 + core).min(h);
-        let (b0, b1) = if core >= h { (0, h) } else { (y0.saturating_sub(halo), (y1 + halo).min(h)) };
-        let filtered = joint_band(cx, img, w, b0, b1 - b0, &noise, brake, &plan);
+        let y1 = (y0 + core.max(1)).min(h);
+        let (b0, b1) = (y0.saturating_sub(halo), (y1 + halo).min(h));
+        let filtered = joint_band(cx, &img, w, b0, b1 - b0, noise, brake, plan);
         let kept = (y1 - y0) * w;
-        nrcj(cx, "nrcj_recon", kept, &[kept as u32, strength.to_bits(), (y0 * w) as u32, (b0 * w) as u32], img, Some(&filtered), &out);
+        nrcj(cx, "nrcj_recon", kept, &[kept as u32, strength.to_bits(), (y0 * w) as u32, (b0 * w) as u32], &img, Some(&filtered), &out);
         drop(filtered);
         // wait: the driver frees a dropped buffer only once the GPU is done with it, and a band's
         // buffers are large (without waiting, freed memory piled up to the whole 4 GB of a Quadro M2200)
         cx.sync();
         y0 = y1;
     }
-    Some(out)
+    out
 }
 
 /// The largest delta `nrcj_dvh` takes (its `JDVH_REACH`).
@@ -1045,16 +1075,23 @@ fn joint_band(
     let mut np = vec![n as u32, w as u32, bh as u32];
     np.extend(noise.model.alpha.iter().chain(&noise.model.beta).chain(&noise.ymax).map(|v| v.to_bits()));
     np.push(noise.tolerance.to_bits());
-    let mut yuv = cx.gpu.buffer(3 * n);
+    // Buffers are handed on to later steps instead of dropped and allocated again: the first write to a
+    // new buffer costs several times a pass over one in use (on an M2 Max, where memory is shared, 290 MB:
+    // 12 ms against 2 ms), and the band holds less at its peak. Kernels take their length from P[0], so a
+    // buffer of 3 values per pixel can stand in for one of 2.
+    let yuv = cx.gpu.buffer(3 * n);
     nrcj(cx, "nrcj_yuv", n, &[n as u32, (b0 * w) as u32], img, None, &yuv);
-    if brake.share > 0.0 {
+    // `yuv` is the transformed band and `guide` takes the pilot, the transformed band before the speck brake
+    // when there is one (no longer read by then)
+    let (yuv, guide) = if brake.share > 0.0 {
         let mut sp = np.clone();
         sp.extend([brake.threshold.to_bits(), brake.share.to_bits()]);
         let despecked = cx.gpu.buffer(3 * n);
         nrcj(cx, "nrcj_speck", n, &sp, &yuv, None, &despecked);
-        yuv = despecked;
-    }
-    let guide = cx.gpu.buffer(3 * n);
+        (despecked, yuv)
+    } else {
+        (yuv, cx.gpu.buffer(3 * n))
+    };
     if lightcraft_pipeline::nrc_joint::pilot_box_radius(w, bh) == Some(1) {
         nrcj(cx, "nrcj_pilot3", n, &np, &yuv, None, &guide);
     } else {
@@ -1063,12 +1100,9 @@ fn joint_band(
     }
     let mut filtered = cx.gpu.buffer(2 * n);
     nrcj(cx, "nrcj_uv", n, &[n as u32], &yuv, None, &filtered);
-    drop(yuv);
-    // dropped buffers only become reusable (and their memory free) once the GPU is done with them
-    cx.sync();
     // paths (exp(−path), as on the CPU) and pair weights; the next scale's paths go to the scratch buffer,
-    // free after the diffusion steps, as on the CPU
-    let mut paths = cx.gpu.buffer(2 * n);
+    // free after the diffusion steps, as on the CPU. The paths take the transformed band's buffer.
+    let mut paths = yuv;
     nrcj(cx, "nrcj_links1", n, &np, &guide, None, &paths);
     let links = cx.gpu.buffer(2 * n);
     let mut lp = np.clone();
@@ -1469,6 +1503,42 @@ mod tests {
 
     /// `nrcj_dvh` (a vertical and a horizontal diffusion step in one dispatch) gives `nrcj_dv` then
     /// `nrcj_dh`: rows that do and don't fill the last workgroup, reaches up to `JDVH_REACH` and beyond the row.
+    /// `joint_bands` gives the same words in one band (written over the image) as in several (a halo on
+    /// either side of each, written to an output of their own), with and without the speck brake.
+    #[test]
+    fn one_band_matches_several() {
+        use lightcraft_pipeline::nrc_joint;
+        let Some(gpu) = crate::device() else {
+            lightcraft_testkit::skip!(Gpu, "no GPU device");
+            return;
+        };
+        let _scope = crate::ctx::RenderScope::new(gpu);
+        let (w, h) = (97usize, 300usize);
+        // a soft gradient with a vertical colour edge, and deterministic noise
+        let mut img = lightcraft_raster::Rgb32f::new(w, h);
+        for (i, p) in img.data.iter_mut().enumerate() {
+            let (x, y) = (i % w, i / w);
+            let r = |k: usize| (((i * 2654435761 + k * 40503) >> 7) % 1000) as f32 / 1000.0 - 0.5;
+            let base = if x < w / 2 { [0.30, 0.25, 0.20] } else { [0.20, 0.25, 0.32] };
+            *p = std::array::from_fn(|c| base[c] * (0.5 + y as f32 / h as f32) + 0.04 * r(c));
+        }
+        let mut noise = nrc_joint::noise_of_tiles(std::slice::from_ref(&img));
+        noise.tolerance = nrc_joint::tolerance(0.5);
+        let plan = nrc_joint::scale_plan(6.0, w, h);
+        let halo = plan.iter().map(|d| 2 * d.0).sum::<usize>() + plan.last().map_or(0, |d| d.0) + 10;
+        for brake in [nrc_joint::speck_brake(0.6), nrc_joint::SpeckBrake::OFF] {
+            let mut cx = Cx::new(gpu);
+            let one = joint_bands(&mut cx, gpu.upload(rgb_words(&img)), w, h, &noise, brake, &plan, 0.8, h, halo);
+            let several = joint_bands(&mut cx, gpu.upload(rgb_words(&img)), w, h, &noise, brake, &plan, 0.8, 64, halo);
+            let (a, b): (Vec<f32>, Vec<f32>) = (cx.read(&one, 3 * w * h), cx.read(&several, 3 * w * h));
+            let input = rgb_words(&img);
+            assert!(a.iter().zip(input).any(|(a, b)| a != b), "the filter changed nothing");
+            for (i, (a, b)) in a.iter().zip(&b).enumerate() {
+                assert_eq!(a.to_bits(), b.to_bits(), "brake {}: word {i}: one band {a}, bands {b}", brake.share);
+            }
+        }
+    }
+
     #[test]
     fn fused_diffusion_steps_match_the_separate_ones() {
         let Some(gpu) = crate::device() else {

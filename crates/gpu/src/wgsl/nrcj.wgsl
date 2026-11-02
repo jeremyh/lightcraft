@@ -568,3 +568,23 @@ fn nrcj_recon(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgrou
     dst[3u * i + 1u] = o.y;
     dst[3u * i + 2u] = o.z;
 }
+
+// `nrcj_recon` over the image itself, for an image filtered as one band: `a` = the filtered chroma pairs,
+// `dst` = the image, read and written. P[0] = n, P[1] = strength.
+@compute @workgroup_size(256)
+fn nrcj_recon_in(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let s = pf(1u);
+    let p = vec3<f32>(dst[3u * i], dst[3u * i + 1u], dst[3u * i + 2u]);
+    let y = lum2020(p);
+    let r = y + a[2u * i];
+    let bl = y + a[2u * i + 1u];
+    let res = vec3<f32>(r, (y - 0.2627 * r - 0.0593 * bl) / 0.6780, bl);
+    let o = p + s * (res - p);
+    dst[3u * i] = o.x;
+    dst[3u * i + 1u] = o.y;
+    dst[3u * i + 2u] = o.z;
+}
