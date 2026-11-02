@@ -791,18 +791,11 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 /// 3 × 3 pixels, which all lie inside. The noise is taken at the ring's mean luminance (a median of it
 /// is only needed for the few pixels past the threshold).
 fn speck_share(p: [f32; 3], ring: &[[f32; 3]; 8], rest: impl Iterator<Item = [f32; 3]>, noise: &JointNoise, brake: SpeckBrake) -> (f32, [f32; 3]) {
-    let y = ring.iter().map(|q| q[0]).sum::<f32>() / 8.0;
-    let (vu, vv) = (noise.var(1, y), noise.var(2, y));
-    // The medians lie between the ring's least and largest value, so the farther of the two bounds the
-    // excess from above (rounding keeps that order): most pixels are decided without the medians.
-    let reach = |c: usize| {
-        let (lo, hi) = ring.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), q| (lo.min(q[c]), hi.max(q[c])));
-        (p[c] - lo).abs().max((p[c] - hi).abs())
-    };
-    let (bu, bv) = (reach(1), reach(2));
-    if bu * bu / vu + bv * bv / vv <= brake.threshold {
+    if speck_bound(p, ring, noise) <= brake.threshold {
         return (0.0, [0.0; 3]);
     }
+    let y = ring.iter().map(|q| q[0]).sum::<f32>() / 8.0;
+    let (vu, vv) = (noise.var(1, y), noise.var(2, y));
     let m = [0.0, median8(ring.map(|q| q[1])), median8(ring.map(|q| q[2]))];
     let (du, dv) = (p[1] - m[1], p[2] - m[2]);
     let excess = du * du / vu + dv * dv / vv;
@@ -830,6 +823,22 @@ fn speck_share(p: [f32; 3], ring: &[[f32; 3]; 8], rest: impl Iterator<Item = [f3
     (brake.share * smoothstep(brake.threshold, 2.0 * brake.threshold, excess) * alone * compact, m)
 }
 
+/// `speck_share`'s first test: a bound from above of the pixel's chroma excess against the ring's medians
+/// (a pixel is a speck candidate above the threshold). The medians lie between the ring's least and largest
+/// value, so the farther of the two bounds the excess (rounding keeps that order): most pixels are decided
+/// without the medians.
+#[inline]
+fn speck_bound(p: [f32; 3], ring: &[[f32; 3]; 8], noise: &JointNoise) -> f32 {
+    let y = ring.iter().map(|q| q[0]).sum::<f32>() / 8.0;
+    let (vu, vv) = (noise.var(1, y), noise.var(2, y));
+    let reach = |c: usize| {
+        let (lo, hi) = ring.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), q| (lo.min(q[c]), hi.max(q[c])));
+        (p[c] - lo).abs().max((p[c] - hi).abs())
+    };
+    let (bu, bv) = (reach(1), reach(2));
+    bu * bu / vu + bv * bv / vv
+}
+
 /// Replace the chroma of compact colour specks by that of their surroundings (see `speck_share`), in the
 /// transformed image (Y, R−Y, B−Y); luminance is never touched. Runs before the guide is built, so a speck
 /// is neither kept by the edge-aware weights nor spread by them.
@@ -847,17 +856,24 @@ fn despeck(img: &mut Rgb32f, noise: &JointNoise, brake: SpeckBrake) {
             let mut changed = Vec::new();
             let rows: [Option<&[[f32; 3]]>; 5] = std::array::from_fn(|k| source.data.get((y + k - 2) * w..(y + k - 1) * w));
             let [Some(r0), Some(r1), Some(r2), Some(r3), Some(r4)] = rows else { return changed };
-            for (x, ((((w0, w1), w2), w3), w4)) in
-                r0.windows(5).zip(r1.windows(5)).zip(r2.windows(5)).zip(r3.windows(5)).zip(r4.windows(5)).enumerate()
-            {
-                let (&[a0, a1, a2, a3, a4], &[b0, _, _, _, b4], &[c0, _, p, _, c4], &[d0, _, _, _, d4], &[e0, e1, e2, e3, e4]) = (w0, w1, w2, w3, w4)
-                else {
+            // the ring alone decides most pixels (`speck_share`'s first test); the rest of the border is
+            // read only for the few that pass it
+            for (x, ((w0, w2), w4)) in r0.windows(5).zip(r2.windows(5)).zip(r4.windows(5)).enumerate() {
+                let (&[a0, _, a2, _, a4], &[c0, _, p, _, c4], &[e0, _, e2, _, e4]) = (w0, w2, w4) else {
                     continue;
                 };
                 // the ring: corners and edge centres of the 5 × 5 square, far enough that a speck spread over
                 // its direct neighbours by demosaicing does not reach them; the rest of the border: with the
                 // ring, every thin line or edge through the pixel crosses at least one of the 16 at any angle
                 let ring = [a0, a2, a4, c0, c4, e0, e2, e4];
+                if speck_bound(p, &ring, noise) <= brake.threshold {
+                    continue;
+                }
+                let (Some(&[a1, _, a3]), Some(&[b0, _, _, _, b4]), Some(&[d0, _, _, _, d4]), Some(&[e1, _, e3])) =
+                    (r0.get(x + 1..x + 4), r1.get(x..x + 5), r3.get(x..x + 5), r4.get(x + 1..x + 4))
+                else {
+                    continue;
+                };
                 let rest = [a1, a3, b0, b4, d0, d4, e1, e3];
                 let (k, m) = speck_share(p, &ring, rest.into_iter(), noise, brake);
                 if k > 0.0 {
@@ -1268,6 +1284,57 @@ mod tests {
             }
             sum.map(|v| v / ((2 * r + 1) * (2 * r + 1)) as f32)
         })
+    }
+
+    /// The speck brake as it was (every pixel's whole 5 × 5 border read up front), for the check below.
+    fn despeck_before(img: &mut Rgb32f, noise: &JointNoise, brake: SpeckBrake) {
+        let (w, h) = (img.width, img.height);
+        let source = img.clone();
+        for y in 2..h - 2 {
+            let r: Vec<&[[f32; 3]]> = (0..5).map(|k| &source.data[(y + k - 2) * w..(y + k - 1) * w]).collect();
+            for (x, ((((w0, w1), w2), w3), w4)) in
+                r[0].windows(5).zip(r[1].windows(5)).zip(r[2].windows(5)).zip(r[3].windows(5)).zip(r[4].windows(5)).enumerate()
+            {
+                let (&[a0, a1, a2, a3, a4], &[b0, _, _, _, b4], &[c0, _, p, _, c4], &[d0, _, _, _, d4], &[e0, e1, e2, e3, e4]) = (w0, w1, w2, w3, w4)
+                else {
+                    continue;
+                };
+                let (k, m) = speck_share(p, &[a0, a2, a4, c0, c4, e0, e2, e4], [a1, a3, b0, b4, d0, d4, e1, e3].into_iter(), noise, brake);
+                if k > 0.0 {
+                    let o = &mut img.data[y * w + x + 2];
+                    (o[1], o[2]) = (p[1] + k * (m[1] - p[1]), p[2] + k * (m[2] - p[2]));
+                }
+            }
+        }
+    }
+
+    /// The speck brake reads the rest of a pixel's border only once the ring makes it a candidate: same
+    /// result bit for bit.
+    #[test]
+    fn despeck_matches_the_whole_border_version() {
+        let dark = [0.004f32; 3];
+        let mut magenta = [0.024, 0.0, 0.024];
+        magenta[1] = (luminance_2020(dark) - 0.2627 * magenta[0] - 0.0593 * magenta[2]) / 0.6780;
+        let mut changed = 0;
+        let clean = Rgb32f::from_fn(160, 96, |x, y| match (x % 23, y % 19) {
+            (3..5, 3..5) => magenta,
+            (11, _) => [0.02, 0.001, 0.003],
+            _ => dark,
+        });
+        for (seed, sigma) in [(0x2545_f491_4f6c_dd1d, 0.001), (7, 0.004)] {
+            let input = noisy(&clean, seed, sigma).map(yuv);
+            let noise = noise_model(&input);
+            for amount in [0.25, 0.6, 1.0] {
+                let (mut a, mut b) = (input.clone(), input.clone());
+                despeck(&mut a, &noise, speck_brake(amount));
+                despeck_before(&mut b, &noise, speck_brake(amount));
+                changed += a.data.iter().zip(&input.data).filter(|(p, q)| p != q).count();
+                for (i, (p, q)) in a.data.iter().zip(&b.data).enumerate() {
+                    assert!((0..3).all(|c| p[c].to_bits() == q[c].to_bits()), "pixel {i}: {p:?} vs {q:?}");
+                }
+            }
+        }
+        assert!(changed > 100, "nothing to compare: only {changed} pixels changed");
     }
 
     /// BENCH (ignored, prints): the optimised filter against the reference on the same 24 MP image,
