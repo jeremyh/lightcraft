@@ -1027,6 +1027,9 @@ fn color_nr_joint(
     Some(out)
 }
 
+/// The largest delta `nrcj_dvh` takes (its `JDVH_REACH`).
+const JDVH_REACH: usize = 128;
+
 /// The filtered chroma pairs of rows `b0 .. b0 + bh` of the image, treated as an image of their own.
 fn joint_band(
     cx: &mut Cx<'_>,
@@ -1051,10 +1054,13 @@ fn joint_band(
         nrcj(cx, "nrcj_speck", n, &sp, &yuv, None, &despecked);
         yuv = despecked;
     }
-    let blurred = gaussian(cx, &yuv, w, bh, 3, 0.8);
     let guide = cx.gpu.buffer(3 * n);
-    nrcj(cx, "nrcj_pilot", n, &np, &yuv, Some(&blurred), &guide);
-    drop(blurred);
+    if lightcraft_pipeline::nrc_joint::pilot_box_radius(w, bh) == Some(1) {
+        nrcj(cx, "nrcj_pilot3", n, &np, &yuv, None, &guide);
+    } else {
+        let blurred = gaussian(cx, &yuv, w, bh, 3, lightcraft_pipeline::nrc_joint::PILOT_SIGMA);
+        nrcj(cx, "nrcj_pilot", n, &np, &yuv, Some(&blurred), &guide);
+    }
     let mut filtered = cx.gpu.buffer(2 * n);
     nrcj(cx, "nrcj_uv", n, &[n as u32], &yuv, None, &filtered);
     drop(yuv);
@@ -1071,12 +1077,20 @@ fn joint_band(
     let mut scratch = cx.gpu.buffer(2 * n);
     for (k, &(delta, rate)) in plan.iter().enumerate() {
         let dp = [n as u32, w as u32, bh as u32, delta as u32, rate.to_bits()];
-        for _ in 0..2 {
-            nrcj(cx, "nrcj_dh", n, &dp, &filtered, Some(&links), &scratch);
+        // horizontal, vertical, horizontal, vertical; the middle two in one dispatch where they fit
+        nrcj(cx, "nrcj_dh", n, &dp, &filtered, Some(&links), &scratch);
+        std::mem::swap(&mut filtered, &mut scratch);
+        if delta <= JDVH_REACH {
+            cx.run("nrcj_dvh", &dp, &[Some(&filtered), Some(&links), Some(&scratch)], groups2(w, bh, [256, 1]));
             std::mem::swap(&mut filtered, &mut scratch);
-            nrcj(cx, "nrcj_dv", n, &dp, &filtered, Some(&links), &scratch);
-            std::mem::swap(&mut filtered, &mut scratch);
+        } else {
+            for k in ["nrcj_dv", "nrcj_dh"] {
+                nrcj(cx, k, n, &dp, &filtered, Some(&links), &scratch);
+                std::mem::swap(&mut filtered, &mut scratch);
+            }
         }
+        nrcj(cx, "nrcj_dv", n, &dp, &filtered, Some(&links), &scratch);
+        std::mem::swap(&mut filtered, &mut scratch);
         if let Some(&(next, _)) = plan.get(k + 1) {
             nrcj(cx, "nrcj_paths", n, &[n as u32, w as u32, bh as u32, delta as u32], &paths, None, &scratch);
             std::mem::swap(&mut paths, &mut scratch);
@@ -1448,6 +1462,36 @@ mod tests {
                         let want = want[i % nc].data[i / nc];
                         assert!((g - want).abs() < 1e-5 * (1.0 + sigma / 10.0), "{w}×{h} nc={nc} sigma={sigma}: word {i} {g} vs {want}");
                     }
+                }
+            }
+        }
+    }
+
+    /// `nrcj_dvh` (a vertical and a horizontal diffusion step in one dispatch) gives `nrcj_dv` then
+    /// `nrcj_dh`: rows that do and don't fill the last workgroup, reaches up to `JDVH_REACH` and beyond the row.
+    #[test]
+    fn fused_diffusion_steps_match_the_separate_ones() {
+        let Some(gpu) = crate::device() else {
+            lightcraft_testkit::skip!(Gpu, "no GPU device");
+            return;
+        };
+        let _scope = crate::ctx::RenderScope::new(gpu);
+        for (w, h) in [(700usize, 5usize), (256, 3), (5, 300), (1, 9)] {
+            let n = w * h;
+            let v = |i: usize, k: usize| ((i * 7 + k * 13) % 29) as f32 / 28.0;
+            let pairs: Vec<f32> = (0..2 * n).map(|i| v(i, 1) - 0.5).collect();
+            let links: Vec<f32> = (0..2 * n).map(|i| v(i, 2)).collect();
+            for delta in [1usize, 4, 100, JDVH_REACH] {
+                let mut cx = Cx::new(gpu);
+                let (src, weights) = (gpu.upload(&pairs), gpu.upload(&links));
+                let dp = [n as u32, w as u32, h as u32, delta as u32, 0.21f32.to_bits()];
+                let (mid, two, fused) = (gpu.buffer(2 * n), gpu.buffer(2 * n), gpu.buffer(2 * n));
+                nrcj(&mut cx, "nrcj_dv", n, &dp, &src, Some(&weights), &mid);
+                nrcj(&mut cx, "nrcj_dh", n, &dp, &mid, Some(&weights), &two);
+                cx.run("nrcj_dvh", &dp, &[Some(&src), Some(&weights), Some(&fused)], groups2(w, h, [256, 1]));
+                let (want, got): (Vec<f32>, Vec<f32>) = (cx.read(&two, 2 * n), cx.read(&fused, 2 * n));
+                for (i, (a, b)) in want.iter().zip(&got).enumerate() {
+                    assert!((a - b).abs() <= 1e-6, "{w}×{h} delta {delta}: word {i} {b} vs {a}");
                 }
             }
         }

@@ -292,11 +292,38 @@ fn nrcj_pilot(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgrou
     if (i >= pu(0u)) {
         return;
     }
+    jpilot(i, jb3(i));
+}
+
+// `nrcj_pilot` where gaussian(0.8) is one 3-pixel box per axis (`nrc_joint::pilot_box_radius` 1): the
+// box is summed here from `a` (clamped edges), without a blurred copy. `b` is not read.
+@compute @workgroup_size(256)
+fn nrcj_pilot3(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
     let w = pu(1u);
     let h = pu(2u);
     let x = i % w;
     let y = i / w;
-    var out = jb3(i);
+    let xs = vec3<u32>(select(x - 1u, 0u, x == 0u), x, min(x + 1u, w - 1u));
+    let ys = vec3<u32>(select(y - 1u, 0u, y == 0u), y, min(y + 1u, h - 1u));
+    var sum = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k++) {
+        let r = ys[k] * w;
+        sum += (ja(r + xs.x) + ja(r + xs.y) + ja(r + xs.z)) * (1.0 / 3.0);
+    }
+    jpilot(i, sum * (1.0 / 3.0));
+}
+
+// The guide at pixel `i` from its isotropic blur `blur` (see `nrcj_pilot`).
+fn jpilot(i: u32, blur: vec3<f32>) {
+    let w = pu(1u);
+    let h = pu(2u);
+    let x = i % w;
+    let y = i / w;
+    var out = blur;
     if (!(x == 0u || y == 0u || x + 1u == w || y + 1u == h)) {
         let p = ja(i);
         // 9 · noise variance per component, at the pixel's luminance
@@ -460,6 +487,60 @@ fn nrcj_dv(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups)
     }
     if (y + delta < h) {
         o += rate * b[2u * i + 1u] * (ja2(i + delta * w) - p);
+    }
+    dst[2u * i] = o.x;
+    dst[2u * i + 1u] = o.y;
+}
+
+// A vertical step (`nrcj_dv`) then a horizontal one (`nrcj_dh`) in one dispatch, the same operations:
+// each workgroup takes 256 pixels of a row, works the vertical step for them and `delta` pixels on either
+// side into workgroup memory, then the horizontal step from there. Parameters as `nrcj_dh`; delta at
+// most `JDVH_REACH` (the caller runs the two kernels beyond that). Grid: (columns / 256, rows).
+const JDVH_REACH: u32 = 128u;
+var<workgroup> jdvh_row: array<vec2<f32>, 512>;
+
+// `nrcj_dv` at pixel (x, y).
+fn jdv(x: u32, y: u32, w: u32, h: u32, delta: u32, rate: f32) -> vec2<f32> {
+    let i = y * w + x;
+    let p = ja2(i);
+    var o = p;
+    if (y >= delta) {
+        o += rate * b[2u * (i - delta * w) + 1u] * (ja2(i - delta * w) - p);
+    }
+    if (y + delta < h) {
+        o += rate * b[2u * i + 1u] * (ja2(i + delta * w) - p);
+    }
+    return o;
+}
+
+@compute @workgroup_size(256)
+fn nrcj_dvh(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>) {
+    let w = pu(1u);
+    let h = pu(2u);
+    let delta = min(pu(3u), JDVH_REACH);
+    let rate = pf(4u);
+    let y = wg.y;
+    let x0 = wg.x * 256u;
+    // vertical step for columns x0 − delta .. x0 + 256 + delta (those inside the image)
+    for (var j = l.x; j < 256u + 2u * delta; j += 256u) {
+        let xx = i32(x0) - i32(delta) + i32(j);
+        if (y < h && xx >= 0 && u32(xx) < w) {
+            jdvh_row[j] = jdv(u32(xx), y, w, h, delta, rate);
+        }
+    }
+    workgroupBarrier();
+    let x = x0 + l.x;
+    if (y >= h || x >= w) {
+        return;
+    }
+    let i = y * w + x;
+    let p = jdvh_row[l.x + delta];
+    var o = p;
+    if (x >= delta) {
+        o += rate * b[2u * (i - delta)] * (jdvh_row[l.x] - p);
+    }
+    if (x + delta < w) {
+        o += rate * b[2u * i] * (jdvh_row[l.x + 2u * delta] - p);
     }
     dst[2u * i] = o.x;
     dst[2u * i + 1u] = o.y;

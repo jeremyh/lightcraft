@@ -285,7 +285,7 @@ fn path_weight(distance: f32, path: f32) -> f32 {
 /// ambiguous structure uses the isotropic pilot, so noise alone does not protect itself.
 /// Written straight into planes (see `Planes`), one row at a time without branches per pixel.
 fn pilot(original: &Rgb32f, noise: &JointNoise) -> Planes {
-    pilot_with(original, noise, single_box_radius(PILOT_SIGMA, original.width, original.height))
+    pilot_with(original, noise, pilot_box_radius(original.width, original.height))
 }
 
 /// [`pilot`], its blur's rows from running sums of one box of radius `single` per axis, or (`None`)
@@ -325,7 +325,13 @@ fn pilot_with(original: &Rgb32f, noise: &JointNoise, single: Option<usize>) -> P
 }
 
 /// The blur of the isotropic pilot.
-const PILOT_SIGMA: f32 = 0.8;
+pub const PILOT_SIGMA: f32 = 0.8;
+
+/// The radius of the pilot blur's box on a `w × h` image when it is one box per axis (1 on any image
+/// the joint filter runs on), else `None`. The GPU sums that box in its pilot kernel.
+pub fn pilot_box_radius(w: usize, h: usize) -> Option<usize> {
+    single_box_radius(PILOT_SIGMA, w, h)
+}
 
 /// The radius of `gaussian(…, sigma)`'s box on a `w × h` image when it is a single box per axis, else `None`.
 fn single_box_radius(sigma: f32, w: usize, h: usize) -> Option<usize> {
@@ -634,7 +640,26 @@ impl ScaleTile<'_> {
     fn horizontal(&self, y: usize, s: &[Pair], out: &mut [Pair], from: usize, to: usize) {
         let (d, w, rate, cx0) = (self.delta, self.w, self.rate, self.cx0);
         let Some(l) = self.links.data.get(y * w..(y + 1) * w) else { return };
-        for x in from..to {
+        // the columns with both neighbours, without branches; the few others one at a time
+        let lo = from.max(d).min(to);
+        let hi = to.min(w.saturating_sub(d)).max(lo);
+        let n = hi - lo;
+        if let (Some(sl), Some(sm), Some(sh), Some(ll), Some(lh), Some(o)) = (
+            s.get(lo - cx0 - d..lo - cx0 - d + n),
+            s.get(lo - cx0..lo - cx0 + n),
+            s.get(lo - cx0 + d..lo - cx0 + d + n),
+            l.get(lo - d..lo - d + n),
+            l.get(lo..lo + n),
+            out.get_mut(lo - cx0..lo - cx0 + n),
+        ) {
+            for (((((o, &p), &a), &b), la), lb) in o.iter_mut().zip(sm).zip(sl).zip(sh).zip(ll).zip(lh) {
+                let mut v = p;
+                exchange(&mut v, p, a, rate * la[0]);
+                exchange(&mut v, p, b, rate * lb[0]);
+                *o = v;
+            }
+        }
+        for x in (from..lo).chain(hi..to) {
             let i = x - cx0;
             let (Some(&p), Some(o)) = (s.get(i), out.get_mut(i)) else { continue };
             *o = p;
@@ -975,7 +1000,6 @@ fn denoise_with(img: &mut Rgb32f, params: &NrcParams, step: usize, detail: f32, 
         diffuse_scale(&filtered, &mut scratch, &links, delta, rate);
         std::mem::swap(&mut filtered, &mut scratch);
         lap(&format!("diffuse {delta}"), &mut tt);
-        lap(&format!("scale {delta}"), &mut tt);
         let Some(&(next, _)) = plan.get(k + 1) else { break };
         // In one pass: paths of length 2·delta (from the two adjacent delta-length paths, read from
         // `paths`, written to `scratch`) and the next scale's pair weights from them.
@@ -987,25 +1011,35 @@ fn denoise_with(img: &mut Rgb32f, params: &NrcParams, step: usize, detail: f32, 
                 |(dh, dv), (y, (prow, lrow))| {
                     row_distances(y, next, dh, dv);
                     let (Some(here), below) = (old.data.get(y * w..(y + 1) * w), old.data.get((y + delta) * w..(y + delta + 1) * w)) else { return };
-                    for (x, (((out, link), &d0), &d1)) in prow.iter_mut().zip(lrow.iter_mut()).zip(dh.iter()).zip(dv.iter()).enumerate() {
-                        let Some(&p) = here.get(x) else { continue };
-                        *out = p;
-                        if x + delta < w
-                            && let Some(q) = here.get(x + delta)
-                        {
-                            out[0] = out[0].min(q[0]);
+                    prow.copy_from_slice(here);
+                    // paths: the horizontal one of x continues with that of x + delta, the vertical one
+                    // with the row delta below
+                    if let (Some(o), Some(q)) = (prow.get_mut(..w.saturating_sub(delta)), here.get(delta..)) {
+                        for (o, q) in o.iter_mut().zip(q) {
+                            o[0] = o[0].min(q[0]);
                         }
-                        if y + delta < h
-                            && let Some(q) = below.and_then(|b| b.get(x))
-                        {
-                            out[1] = out[1].min(q[1]);
+                    }
+                    if y + delta < h
+                        && let Some(b) = below
+                    {
+                        for (o, q) in prow.iter_mut().zip(b) {
+                            o[1] = o[1].min(q[1]);
                         }
-                        *link = [0.0; 2];
-                        if x + next < w {
-                            link[0] = path_weight(d0, out[0]);
-                        }
-                        if y + next < h {
+                    }
+                    let n = w.saturating_sub(next);
+                    for ((link, out), &d0) in lrow.iter_mut().zip(prow.iter()).zip(dh.iter()).take(n) {
+                        link[0] = path_weight(d0, out[0]);
+                    }
+                    for link in lrow.iter_mut().skip(n) {
+                        link[0] = 0.0;
+                    }
+                    if y + next < h {
+                        for ((link, out), &d1) in lrow.iter_mut().zip(prow.iter()).zip(dv.iter()) {
                             link[1] = path_weight(d1, out[1]);
+                        }
+                    } else {
+                        for link in lrow.iter_mut() {
+                            link[1] = 0.0;
                         }
                     }
                 },
