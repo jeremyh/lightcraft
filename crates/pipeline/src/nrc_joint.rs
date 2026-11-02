@@ -273,11 +273,14 @@ fn weight(distance: f32, path: f32) -> f32 {
     if m == 0.0 { 1.0 } else { (-m).exp() }
 }
 
-/// `weight(distance, path)` with the path given as exp(−path): min(exp(−distance), that), and no `exp`
-/// for a distance of 0.
+/// `weight(distance, path)` with the path given as exp(−path): min(exp(−distance), that). A distance of 0
+/// gives the path itself without a branch (exp(−0) is exactly 1 and paths are at most 1): beyond the direct
+/// neighbours, whether a distance is 0 is close to a coin toss in noise, and the mispredicted branch cost
+/// more than the `exp` it saved (links at delta 2–32, M2 Max: 24 → 18 ms each on 24 MP). `weight` keeps
+/// its branch: for direct neighbours a distance of 0 is common enough that skipping `exp` pays.
 #[inline]
 fn path_weight(distance: f32, path: f32) -> f32 {
-    if distance == 0.0 { path } else { (-distance).exp().min(path) }
+    (-distance).exp().min(path)
 }
 
 /// Denoise the pilot along a clearly smoother axis at strong edges. An isotropic blur

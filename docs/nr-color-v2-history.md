@@ -207,6 +207,38 @@ guide's three planes through memory), the diffusion sweeps, and the noise model 
 Computing each scale's weights inside its diffusion tile (the paths are sliding minima of the direct neighbours'
 weights, so they could be made there) would save some of that traffic at the cost of recomputing the halo.
 
+### Fourth round (Apple M2 Max: 12-core CPU, 30-core GPU through Metal, 32 GB; same Z f NEF and X-T2 RAF)
+
+On this machine the third round's gains were smaller (colour NR −21 % on the CPU, GPU stage −14 %, GPU export
+0.88 → 0.87 s); the integrated-GPU budget change does nothing here (one band under the fixed 2 GB already). Two
+things cost more here than on the Ryzen: the first write to newly allocated memory, and mispredicted branches
+(the CPU is not memory-bound: `links` scales almost linearly with cores, ~16 ns a pixel on one).
+
+| Change | Result |
+|---|---|
+| GPU: buffers handed on instead of dropped and allocated again (the transformed band before the speck brake takes the guide, the transformed band the paths), and one band is written over the image (`nrcj_recon_in`; no whole-image output, and strength 0 returns the image without a copy). A kernel's first write to a new 290 MB buffer took 12 ms, the same kernel on a used one 2 ms (an explicit clear of a new buffer: 10 ms) | WB + NR stage 191 → 155 ms; device memory peak 1860 → 1674 MB. Same words (`one_band_matches_several` checks one band against several) |
+| CPU: `path_weight` without its branch (exp(−0) is exactly 1 and paths are at most 1, so min(exp(−d), path) is the path at d = 0) | links at delta 2–32: 24 → 18 ms each; bit for bit |
+| CPU: `weight` (direct neighbours) without its branch | slower (links 1: 41 → 46 ms): there a distance of 0 is common and predictable; kept |
+| CPU: diffusion tiles in parallel as well as strips (16 strips at delta 32 for 12 cores), and taller strips | 3–4 ms over the six scales; dropped |
+| CPU: new images (14 values a pixel, ~1.4 GB on 24 MP) cost their page faults: touching `paths` and `links` before `links 1` took 27 ms and `links 1` fell from 41 to 21 ms | not changed: the only buffer that could be recycled (the transformed image, as the paths) saves ~11 ms and needs casts between pixel types |
+
+Totals (median of 5, interleaved; WB + NR stage and colour NR median of 3):
+
+| | before this round | after |
+|---|---|---|
+| CPU, colour NR (`nr joint`), NEF / RAF | 337 / 335 ms | 311 / 310 ms |
+| GPU, WB + NR stage, NEF / RAF | 191 / 190 ms | 155 / 156 ms |
+| CPU, whole export, NEF / RAF | 1.22 / 1.17 s | 1.20 / 1.13 s |
+| GPU, whole export, NEF / RAF | 0.88 / 0.81 s | 0.84 / 0.78 s |
+
+On the Ryzen 5 7545U / Radeon 740M (third round's machine, builds merged onto current main) the same two changes
+give less but no loss on any of the three photos tried (ISO 6400 NEF and RAF, ISO 200 NEF): colour NR 793 → 757 ms,
+iGPU WB + NR stage 492 → 468 ms, whole export 2.92 → 2.90 s (CPU) and 2.07 → 2.02 s (iGPU) for the NEF.
+
+CPU and GPU JPEGs byte-identical to before this round, on both machines. In the app the GPU's first-write cost is mostly
+paid once (the device buffer pool keeps buffers between renders for reuse); the CPU's images are
+allocated anew for every render.
+
 ## 5. Not part of this work
 
 - White dots near black in #820 came from the camera look's hue/saturation table, fixed by #858.
