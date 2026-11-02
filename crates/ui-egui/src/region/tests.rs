@@ -207,6 +207,75 @@ fn a_hostile_clock_never_panics() {
     }
 }
 
+// Given a slider held still past SETTLE_SECS, the drag is paused (the loupe renders it at full
+// quality); a new value, another control or photo, or the end of the drag starts the wait over
+#[test]
+fn a_drag_held_still_settles_and_drafts_again_when_it_moves() {
+    use lightcraft_catalog::PhotoId;
+    let mut s = DragSettle::default();
+    let exposure = Some((PhotoId(1), "Exposure"));
+    assert!(!s.settled(exposure, 1, 10.0), "a drag that just started is moving");
+    assert!(s.remaining(10.0).is_some_and(|d| (d.as_secs_f64() - SETTLE_SECS).abs() < 1e-9));
+    assert!(!s.settled(exposure, 1, 10.0 + SETTLE_SECS / 2.0));
+    let past = SETTLE_SECS + 1e-6;
+    assert!(s.settled(exposure, 1, 10.0 + past), "held still: paused");
+    assert_eq!(s.remaining(10.0 + past), None, "settled: no repaint to wait for");
+    assert!(!s.settled(exposure, 2, 11.0), "a new value drafts again");
+    assert!(!s.settled(exposure, 2, 11.0 + SETTLE_SECS / 2.0));
+    assert!(s.settled(exposure, 2, 11.0 + past));
+    assert!(!s.settled(Some((PhotoId(1), "Contrast")), 2, 12.0), "another control: a new drag");
+    assert!(!s.settled(Some((PhotoId(2), "Contrast")), 2, 13.0), "another photo: a new drag");
+    assert!(!s.settled(None, 2, 14.0), "no drag: nothing paused");
+    assert_eq!(s.remaining(14.0), None);
+    assert!(!s.settled(exposure, 2, 14.0), "a drag after the last one starts moving");
+}
+
+// Given a clock that is not a number or runs backwards, a drag never panics and a non-finite
+// one never settles nor asks for a repaint it can't time
+#[test]
+fn a_hostile_clock_never_settles_a_drag_by_mistake() {
+    use lightcraft_catalog::PhotoId;
+    let drag = Some((PhotoId(1), "Exposure"));
+    for (start, later) in [(f64::NAN, f64::NAN), (5.0, 1.0), (f64::NAN, 5.0), (f64::INFINITY, f64::INFINITY), (f64::NEG_INFINITY, 0.0)] {
+        let mut s = DragSettle::default();
+        assert!(!s.settled(drag, 1, start));
+        let _ = s.remaining(start);
+        let _ = s.remaining(later);
+        let settled = s.settled(drag, 1, later);
+        assert!(!settled || (later - start) >= SETTLE_SECS, "{start} → {later} settled");
+    }
+    let mut s = DragSettle::default();
+    s.settled(drag, 1, f64::NAN);
+    assert_eq!(s.remaining(f64::NAN), None);
+    assert!(!s.settled(drag, 1, f64::NAN));
+}
+
+// Given a paused drag showing its full render, that render is not timed as a draft: a big full
+// render at rest must not make the slider draft small
+#[test]
+fn a_paused_drags_render_is_not_timed_as_a_draft() {
+    use lightcraft_catalog::PhotoId;
+    let mut d = DragScale::default();
+    let drag = Some((PhotoId(1), "Exposure"));
+    for _ in 0..2 {
+        d.scale(drag, true, None, 0.0);
+        for key in 1..=4 {
+            d.observe(key, 5.0, None);
+        }
+        // paused: the full render (slow) is on screen for a while, then the drag moves on
+        for _ in 0..3 {
+            d.ignore(Some(100));
+        }
+        d.observe(100, 400.0, None);
+        d.observe(100, 400.0, None);
+        for key in 5..=6 {
+            d.observe(key, 5.0, None);
+        }
+        d.scale(None, true, None, 0.0);
+    }
+    assert_eq!(d.scale(drag, true, None, 0.0), Some(1.0), "the paused render's 400 ms counted against the drag");
+}
+
 // Given full-size drafts within budget (the first one, rebuilding the stage caches, may be
 // slow), the next drag stays at full size
 #[test]

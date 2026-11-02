@@ -180,20 +180,16 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     let before_target = in_pane(areas[0], target_rect);
     app.image_rect = Some(img_rect);
     // request renders: the loupe at display resolution (drafts during drags)
-    let interacting = app.session.interaction.is_some();
+    let dragging = app.session.interaction.is_some();
     let overlay = view_overlay(app, &d);
-    // a drag drafts at full size where the GPU draws the view (by the GPU's own rule, `handles`;
-    // `ready` first: `available` would wait for a device still being created)
-    let gpu = interacting && gpu_draws_view(app, overlay);
     let shown = app.renderer.textures.get(&Slot::Main).filter(|t| t.photo == id && t.quick.is_none()).map(|t| (t.key, t.ms));
-    let drag = app.session.interaction.as_ref().map(|i| (i.photo, i.label.as_str()));
     let now = ui.input(|i| i.time);
-    let draft = app.drag_scale.scale(drag, gpu, shown.map(|(key, _)| key), now);
+    let look = d.hash64();
+    let DragView { interacting, settled, draft } = drag_view(app, ui, overlay, look, shown.map(|(key, _)| key), now);
     // render at the final size: a click-zoom animation only changes how the result is drawn
     let native_long = native[0].max(native[1]);
     let drawn_long = target_rect.width().max(target_rect.height()) * ppp;
     // the whole frame at about canvas size; the zoomed part of it is a window render (below)
-    let look = d.hash64();
     // Diagnostic views that need whole-frame context, or reads too far for one window, still
     // render the whole frame at the size it is drawn. Mask overlays and soft proofing (both act
     // pixel by pixel) are window-safe.
@@ -208,9 +204,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     let plan = loupe_plan(app, id, look, sizes);
     // time the full-size drafts where they are what shows: under a window the whole-frame draft
     // is small anyway, and the frame's time is the window's upload
-    if let Some((key, ms)) = shown.filter(|_| plan.window_edge.is_none()) {
-        app.drag_scale.observe(key, ms, app.perf.host_frame_ms);
-    }
+    time_drafts(app, settled, shown.filter(|_| plan.window_edge.is_none()));
     // a pinch changes the zoom every frame: keep the sizes of before it until it is quiet
     let plan = app.size_hold.apply(id, now, navigating, plan);
     // the drawn size in pixels, clamped first: a NaN or negative float must not become a size
@@ -237,7 +231,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     // hovering a preset or profile: the photo with that look, shown instead of the loupe render
     // once it is ready (nothing is committed)
     let hover_key = request_hover(app, &ask, [sw, sh]);
-    if !interacting {
+    if !dragging {
         prefetch_neighbours(app, id, main_area, ppp, texture_side, !crop_tool);
     }
     // until the loupe has this photo: show its cached render / embedded preview / a thumbnail
@@ -711,6 +705,46 @@ fn loupe_plan(app: &LightcraftApp, id: PhotoId, look: u64, sizes: crate::region:
         return crate::region::plan(&app.ui.settings, crate::region::ViewSizes { windows: false, ..sizes });
     }
     plan
+}
+
+/// How the loupe renders for a slider drag this frame.
+struct DragView {
+    /// A drag that is moving: the loupe drafts.
+    interacting: bool,
+    /// A drag held still ([`crate::region::DragSettle`]): it renders as at rest.
+    settled: bool,
+    /// The whole-frame draft's scale ([`crate::region::DragScale`]); `None` at rest or paused.
+    draft: Option<f32>,
+}
+
+/// Whether a drag drafts this frame, and at what scale. `look` is a hash of what the loupe shows,
+/// `shown` the key of the whole-frame render on screen, `now` the host's clock (s).
+fn drag_view(app: &mut LightcraftApp, ui: &egui::Ui, overlay: lightcraft_pipeline::Overlay, look: u64, shown: Option<u64>, now: f64) -> DragView {
+    let dragging = app.session.interaction.is_some();
+    // a drag drafts at full size where the GPU draws the view (by the GPU's own rule, `handles`;
+    // `ready` first: `available` would wait for a device still being created)
+    let gpu = dragging && gpu_draws_view(app, overlay);
+    let drag = app.session.interaction.as_ref().map(|i| (i.photo, i.label.as_str()));
+    let draft = app.drag_scale.scale(drag, gpu, shown, now);
+    // a drag held still renders as at rest (full quality), and drafts again when it moves on; not
+    // an Alt-drag preview (clipping, sharpening mask), a map of the drag that the display fit's
+    // filter would only blur
+    let alt_view = app.ui.dragging_control.as_deref().and_then(lightcraft_pipeline::Overlay::for_control) == Some(overlay);
+    let settled = app.drag_settle.settled(drag.filter(|_| !alt_view), look, now);
+    if let Some(wait) = app.drag_settle.remaining(now) {
+        ui.ctx().request_repaint_after(wait);
+    }
+    DragView { interacting: dragging && !settled, settled, draft: draft.filter(|_| !settled) }
+}
+
+/// Time the whole-frame render on screen (`shown`: its key and render time) as one of the drag's
+/// drafts. A paused drag's render is not a draft: it goes untimed.
+fn time_drafts(app: &mut LightcraftApp, settled: bool, shown: Option<(u64, f64)>) {
+    if settled {
+        app.drag_scale.ignore(shown.map(|(key, _)| key));
+    } else if let Some((key, ms)) = shown {
+        app.drag_scale.observe(key, ms, app.perf.host_frame_ms);
+    }
 }
 
 fn whole_frame_edge(app: &LightcraftApp, interacting: bool, plan: &crate::region::LoupePlan, native_long: usize, texture_side: usize) -> usize {

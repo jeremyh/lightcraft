@@ -257,6 +257,15 @@ impl DragScale {
         }
     }
 
+    /// Let the render on screen (`key`) go untimed: it is not one of the drag's drafts (a paused
+    /// drag shows the render at rest, [`DragSettle`]), nor is it once the drag moves on.
+    pub fn ignore(&mut self, key: Option<u64>) {
+        if key.is_some() {
+            self.seen = key;
+        }
+        self.pending = None;
+    }
+
     /// The drag ended. A drag timed at full size updates its pair's verdict: over [`VERDICT_MS`]
     /// a first time makes it suspect, a second slow for [`RETRY_AFTER_S`], and a slow retry
     /// doubles the wait; within it, the verdict is forgotten. A drag never timed at full size (it
@@ -280,6 +289,61 @@ impl DragScale {
         self.samples.clear();
         self.seen = None;
         self.pending = None;
+    }
+}
+
+/// How long (s) a held slider must keep its value before the loupe shows it at full quality.
+/// Drafts are for following a moving slider; one held still is being looked at.
+pub const SETTLE_SECS: f64 = 0.2;
+
+/// Whether a drag has paused: the button is still held but the look has not changed for
+/// [`SETTLE_SECS`]. A paused drag renders like one that has ended (full quality, at the size at
+/// rest), so a value can be judged without letting go, and releasing it then shows no change; the
+/// next move drafts again. The drag itself, and its one undo step, go on.
+#[derive(Clone, Debug, Default)]
+pub struct DragSettle {
+    /// The drag's photo and control, the look last seen and since when (the host's clock, s).
+    last: Option<((lightcraft_catalog::PhotoId, String), u64, f64)>,
+    /// Never settle (tests of drafts, whose simulated clock runs on while a render is in flight).
+    #[cfg(test)]
+    keep_moving: bool,
+}
+
+impl DragSettle {
+    /// Once per frame: whether the drag `drag` (photo and control; `None`: no drag) is paused with
+    /// `look` (a hash of what the loupe shows) at `now`. A drag that just started, or whose look
+    /// just changed, is not.
+    pub fn settled(&mut self, drag: Option<(lightcraft_catalog::PhotoId, &str)>, look: u64, now: f64) -> bool {
+        let Some((photo, control)) = drag else {
+            self.last = None;
+            return false;
+        };
+        #[cfg(test)]
+        if self.keep_moving {
+            return false;
+        }
+        match &self.last {
+            Some(((p, c), l, since)) if *p == photo && c == control && *l == look => now - since >= SETTLE_SECS,
+            _ => {
+                self.last = Some(((photo, control.to_string()), look, now));
+                false
+            }
+        }
+    }
+
+    /// Treat every drag as moving, so it drafts until it ends (tests of drafts).
+    #[cfg(test)]
+    pub fn keep_moving(&mut self) {
+        self.keep_moving = true;
+    }
+
+    /// How long from `now` until the current drag settles if its look holds (the caller asks for a
+    /// repaint then: a slider held still sends no input); `None` without a drag, or once settled.
+    pub fn remaining(&self, now: f64) -> Option<std::time::Duration> {
+        let (_, _, since) = self.last.as_ref()?;
+        let left = since + SETTLE_SECS - now;
+        // (a clock that is not a number never settles, and asks for nothing)
+        (left > 0.0 && left.is_finite()).then(|| std::time::Duration::try_from_secs_f64(left).unwrap_or_default())
     }
 }
 

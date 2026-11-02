@@ -98,6 +98,7 @@ impl LightcraftApp {
             region_before_view: None,
             size_hold: Default::default(),
             drag_scale: Default::default(),
+            drag_settle: Default::default(),
             window_refused: None,
             region_tiles: Default::default(),
             compare_windows: [None; 2],

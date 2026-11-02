@@ -563,12 +563,51 @@ mod in_the_loupe {
     /// Drag Exposure in the loupe and return the long edge of the whole-frame draft shown, with
     /// the largest a small (CPU-sized) draft of the photo as drawn can be.
     fn drag_exposure(h: &mut Headless) -> (usize, usize) {
+        // (the simulated clock runs on while a draft renders: the drag must not count as paused)
+        h.app.drag_settle.keep_moving();
         h.app.session.begin_interaction("Exposure").unwrap();
         h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "light.exposure", "value": 0.5}}), T);
         h.settle(SETTLE);
         let image = h.app.image_rect.expect("the photo was drawn");
         let small = (image.width().max(image.height()) * crate::region::CPU_DRAFT_SCALE) as usize + crate::state::LOUPE_EDGE_STEP;
         (rendered_long_edge(h), small)
+    }
+
+    /// Hold Exposure at 0.5 in the loupe, then release it: the key of the whole-frame render shown
+    /// while it was held, and after.
+    fn hold_then_release_exposure(h: &mut Headless) -> (u64, u64) {
+        let main_key = |h: &Headless| h.app.renderer.textures.get(&Slot::Main).map(|t| t.key).expect("the loupe rendered");
+        h.app.session.begin_interaction("Exposure").unwrap();
+        h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "light.exposure", "value": 0.5}}), T);
+        h.settle(SETTLE);
+        // held still well past SETTLE_SECS (no input: the loupe asks for the frame that settles it)
+        for _ in 0..30 {
+            h.step();
+        }
+        h.settle(SETTLE);
+        let held = main_key(h);
+        h.app.session.end_interaction().unwrap();
+        h.settle(SETTLE);
+        (held, main_key(h))
+    }
+
+    // Given a slider held still with the button down, the loupe shows the render at rest (full
+    // quality, at the size at rest) as Lightroom refines a paused drag, so the value can be judged
+    // without letting go and releasing it then changes nothing on screen
+    #[test]
+    fn a_paused_drag_shows_the_render_at_rest() {
+        let (_fx, mut h, _) = detail();
+        let (held, released) = hold_then_release_exposure(&mut h);
+        assert_eq!(held, released, "the paused drag showed a draft, not the render the release shows");
+    }
+
+    // Given a slider drag still moving, it drafts: what shows is not the render at rest
+    #[test]
+    fn a_moving_drag_shows_a_draft() {
+        let (_fx, mut h, _) = detail();
+        h.app.drag_settle.keep_moving();
+        let (held, released) = hold_then_release_exposure(&mut h);
+        assert_ne!(held, released, "a moving drag showed the full render");
     }
 
     // Given a drag whose full-size drafts were too slow before (the CPU, a LUT profile, a slow

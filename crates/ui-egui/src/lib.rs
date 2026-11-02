@@ -296,6 +296,8 @@ pub struct LightcraftApp {
     pub(crate) size_hold: region::SizeHold,
     /// The size of a slider drag's whole-frame drafts (full size where they keep up, issue #330).
     pub(crate) drag_scale: region::DragScale,
+    /// Whether a slider drag has paused, so the loupe shows it at full quality ([`region::DragSettle`]).
+    pub(crate) drag_settle: region::DragSettle,
     /// (photo, look, window frame size) a window was refused for: it reads more than one render holds.
     pub(crate) window_refused: Option<(lightcraft_catalog::PhotoId, u64, usize)>,
     pub(crate) region_tiles: std::collections::HashMap<(bool, u64), region::RegionView>,
