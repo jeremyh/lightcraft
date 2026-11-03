@@ -31,6 +31,72 @@ fn chroma_scale(o: f32) -> f32 {
     return a + (b - a) * t;
 }
 
+// `lightcraft_pipeline::finish::gamut_keep_saturation` into 0..1: keep luminance (weights `luma`)
+// and saturation; clipped luminance goes to the channels above the lowest first, then towards white.
+// `t` is the chroma scale (as `gamut_scale`'s), `clipped` whether a channel was past white.
+struct Kept {
+    c: vec3<f32>,
+    t: f32,
+    clipped: bool,
+}
+
+fn gamut_keep_saturation(r0: vec3<f32>, luma: vec3<f32>) -> Kept {
+    let yy = clamp(dot(luma, r0), 0.0, 1.0);
+    var t = 1.0;
+    for (var k = 0u; k < 3u; k++) {
+        if (r0[k] < 0.0) {
+            t = min(t, yy / max(yy - r0[k], 1e-9));
+        }
+    }
+    var r = r0;
+    if (t < 1.0) {
+        r = yy + (r0 - yy) * t;
+    }
+    let lo = min(r.x, min(r.y, r.z));
+    let hi = max(r.x, max(r.y, r.z));
+    if (!(hi > 1.0)) {
+        return Kept(r, t, false);
+    }
+    var q = min(r, vec3<f32>(1.0));
+    var w = vec3<f32>(1.0);
+    if (hi - lo > 1e-9) {
+        w = (r - lo) / (hi - lo);
+    }
+    let room = dot(luma, w * (1.0 - q));
+    let need = yy - dot(luma, q);
+    if (room > 1e-9 && need > 0.0) {
+        q = q + min(need / room, 1.0) * w * (1.0 - q);
+    }
+    let need2 = yy - dot(luma, q);
+    let room2 = dot(luma, 1.0 - q);
+    if (room2 > 1e-9 && need2 > 0.0) {
+        q = q + (1.0 - q) * clamp(need2 / room2, 0.0, 1.0);
+    }
+    let chroma = max(q.x, max(q.y, q.z)) - min(q.x, min(q.y, q.z));
+    return Kept(q, min(t, chroma / max(hi - lo, 1e-9)), true);
+}
+
+// `lightcraft_pipeline::finish::gamut_map_keep_to` into 0..1: `gamut_keep_saturation`, then, for a
+// colour past white, a share Y^6 (`KEEP_DESATURATE_POWER`) of `gamut_scale`'s desaturated colour.
+// The colour and its chroma scale (`w`).
+fn gamut_keep(r0: vec3<f32>, luma: vec3<f32>) -> vec4<f32> {
+    let k = gamut_keep_saturation(r0, luma);
+    if (!k.clipped) {
+        return vec4<f32>(k.c, k.t);
+    }
+    let d = gamut_apply(r0, luma, gamut_scale(r0, luma));
+    let y = clamp(dot(luma, d), 0.0, 1.0);
+    let y2 = y * y;
+    let f = y2 * y2 * y2;
+    if (!(f > 0.0)) {
+        return vec4<f32>(k.c, k.t);
+    }
+    let q = k.c + (d - k.c) * f;
+    let chroma = max(q.x, max(q.y, q.z)) - min(q.x, min(q.y, q.z));
+    let span = max(r0.x, max(r0.y, r0.z)) - min(r0.x, min(r0.y, r0.z));
+    return vec4<f32>(q, min(k.t, chroma / max(span, 1e-9)));
+}
+
 fn encode_srgb(v: f32) -> f32 {
     let o = pu(F_SRGB_OFF);
     let f = clamp(v, 0.0, 1.0) * f32(SRGB_N);
@@ -287,6 +353,15 @@ fn gamut_apply(r: vec3<f32>, luma: vec3<f32>, tg: f32) -> vec3<f32> {
     return r;
 }
 
+// `finish::GamutMap::apply` (SDR): `r` brought into 0..1 by the settings' process, and its chroma scale (`w`).
+fn gamut_map(r: vec3<f32>, luma: vec3<f32>) -> vec4<f32> {
+    if (pu(F_GAMUT_KEEP) != 0u) {
+        return gamut_keep(r, luma);
+    }
+    let tg = gamut_scale(r, luma);
+    return vec4<f32>(gamut_apply(r, luma, tg), tg);
+}
+
 // `finish::out_of_gamut`: `r` needed desaturating by `t` to fit and isn't just a neutral beyond white or below black.
 fn out_of_gamut(r: vec3<f32>, t: f32) -> bool {
     let lo = min(r.x, min(r.y, r.z));
@@ -482,8 +557,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let mx = max(d.x, max(d.y, d.z));
     if (mx > 1.0) {
-        let t = clamp((mx - 1.0) / max(mx - o, 1e-6), 0.0, 1.0);
-        d = d + (o - d) * t;
+        if (pu(F_GAMUT_KEEP) != 0u) {
+            // the share towards white is taken once, by the output map below
+            d = gamut_keep_saturation(d, vec3<f32>(0.2627, 0.6780, 0.0593)).c;
+        } else {
+            let t = clamp((mx - 1.0) / max(mx - o, 1e-6), 0.0, 1.0);
+            d = d + (o - d) * t;
+        }
     }
 
     // --- colour
@@ -530,27 +610,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // --- gamut map to the output space (desaturate towards luminance until in range);
+    // --- gamut map to the output space (`GamutMap`: by process);
     // soft proofing maps into the proof space first and shows that in the output space
     // (warn: 0 none, 1 destination gamut, 2 display gamut)
     var warn = 0u;
     var r: vec3<f32>;
     if (pu(F_PROOF) != 0u) {
         let q0 = mul3(mat_at(F_PROOF_M), d);
-        let tq = gamut_scale(q0, vec3<f32>(pf(F_PROOF_Y), pf(F_PROOF_Y + 1u), pf(F_PROOF_Y + 2u)));
-        if (pu(F_PROOF_DEST_WARN) != 0u && out_of_gamut(q0, tq)) {
+        let q = gamut_map(q0, vec3<f32>(pf(F_PROOF_Y), pf(F_PROOF_Y + 1u), pf(F_PROOF_Y + 2u)));
+        if (pu(F_PROOF_DEST_WARN) != 0u && out_of_gamut(q0, q.w)) {
             warn = 1u;
         }
-        r = mul3(mat_at(F_PROOF_OUT), gamut_apply(q0, vec3<f32>(pf(F_PROOF_Y), pf(F_PROOF_Y + 1u), pf(F_PROOF_Y + 2u)), tq));
+        r = mul3(mat_at(F_PROOF_OUT), q.xyz);
     } else {
         r = mul3(mat_at(F_OUT_M), d);
     }
     let oy = vec3<f32>(pf(F_OUT_Y), pf(F_OUT_Y + 1u), pf(F_OUT_Y + 2u));
-    let tg = gamut_scale(r, oy);
-    if (pu(F_PROOF) != 0u && pu(F_PROOF_DISP_WARN) != 0u && warn == 0u && out_of_gamut(r, tg)) {
+    let mapped = gamut_map(r, oy);
+    if (pu(F_PROOF) != 0u && pu(F_PROOF_DISP_WARN) != 0u && warn == 0u && out_of_gamut(r, mapped.w)) {
         warn = 2u;
     }
-    r = gamut_apply(r, oy, tg);
+    r = mapped.xyz;
 
     // --- encode, curves, grain
     var e = vec3<f32>(encode_srgb(r.x), encode_srgb(r.y), encode_srgb(r.z));

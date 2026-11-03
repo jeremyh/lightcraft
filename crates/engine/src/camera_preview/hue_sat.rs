@@ -1,5 +1,5 @@
 use super::mono::to_prophoto;
-use super::pairs::{displayed, luma};
+use super::pairs::{displayed_in_gamut, luma};
 use super::{CameraLook, CameraTone, HsvTable, Mat3, ToneMap, luminance_2020};
 
 /// [`HueSat::apply`] restores the luminance in full only if the table kept at least this share of it. A colour
@@ -222,7 +222,7 @@ pub(super) fn fit_chroma(pairs: &[([f64; 3], [f64; 3])], look: &CameraLook) -> O
         correction.as_ref().map_or(p, |c| c.apply(p.map(|v| v as f32)).map(f64::from))
     };
     let tone = ToneMap::camera(&look.tone, 0.0, 0.0, 0.0);
-    let predict = |x: &[f64; 3]| displayed(scene(x), &tone);
+    let predict = |x: &[f64; 3]| displayed_in_gamut(scene(x), &tone);
     let chroma = |p: [f64; 3]| {
         let y = luma(p);
         (y > 0.0).then(|| p.iter().map(|v| (v / y - 1.0).powi(2)).sum::<f64>().sqrt())
@@ -258,7 +258,7 @@ pub(super) fn fit_chroma(pairs: &[([f64; 3], [f64; 3])], look: &CameraLook) -> O
             .iter()
             .step_by(3)
             .map(|(x, y)| {
-                let p = displayed(scene(x), map);
+                let p = displayed_in_gamut(scene(x), map);
                 (0..3).map(|c| (p[c] - y[c]).powi(2)).sum::<f64>()
             })
             .sum()

@@ -412,7 +412,9 @@ fn chroma_curve_follows_highlight_bleaching() {
     let fit = fit_pairs(&sensor, &reference).unwrap();
     // relative to the matrix, which already carries the average colourfulness
     let chroma = fit.tone.chroma();
-    assert!(chroma[6] < 0.5 * chroma[1], "highlights bleach relative to shadows: {chroma:?}");
+    // about half (0.51): the fit predicts through the V3 output map, which takes a share of the
+    // bleaching right below white itself (`gamut_map_keep_to`), so the curve needs a little less
+    assert!(chroma[6] < 0.55 * chroma[1], "highlights bleach relative to shadows: {chroma:?}");
     // and the rendered highlights land on the camera's, far closer than without the curve
     let with = ToneMap::camera(&fit.tone, 0.0, 0.0, 0.0);
     let without = ToneMap::camera(&fit.tone.with_chroma([1.0; lightcraft_pipeline::tone::CHROMA_N]).unwrap(), 0.0, 0.0, 0.0);
@@ -430,6 +432,37 @@ fn chroma_curve_follows_highlight_bleaching() {
     };
     let (a, b) = (highlight_error(&without), highlight_error(&with));
     assert!(b < 0.5 * a, "highlight error {a:.4} -> {b:.4}");
+}
+
+/// A camera that doesn't bleach, but whose JPEG holds a bright saturated orange within sRGB (red
+/// clipped, blue kept low): the chroma curve must not read the gamut limit as bleaching. Fitted
+/// on unmapped predictions it desaturated every bright colour, a sunset's orange halo among them.
+#[test]
+fn chroma_curve_does_not_learn_the_jpeg_gamut() {
+    use lightcraft_color::SRGB;
+    use lightcraft_pipeline::finish::GamutMap;
+    use lightcraft_pipeline::output::OutputSpace;
+    let known = Mat3([[1.8, -0.4, -0.1], [-0.2, 1.5, -0.1], [-0.05, -0.3, 1.7]]);
+    let (to, back) = (REC2020.to_space(&SRGB), SRGB.to_space(&REC2020));
+    let mut sensor = Rgb32f::new(96, 64);
+    let mut reference = sensor.clone();
+    for (i, (src, dst)) in sensor.data.iter_mut().zip(&mut reference.data).enumerate() {
+        let ev = 0.02 + (i % 37) as f32 * 0.03;
+        *src = if i % 3 == 0 {
+            [ev * 1.25, ev * 0.5, ev * 0.12]
+        } else {
+            [ev * (0.75 + (i % 11) as f32 * 0.05), ev, ev * (0.7 + (i % 13) as f32 * 0.05)]
+        };
+        let p = known.apply_f32(*src);
+        let y = luminance_2020(p);
+        let o = 1.0 - (-2.5 * y).exp();
+        let d = p.map(|v| v * o / y);
+        let (r, _) = GamutMap::KeepSaturation.apply(to.apply_f32(d), OutputSpace::Srgb.luma(), 1.0);
+        *dst = back.apply_f32(r).map(|v| v.clamp(0.0, 0.999));
+    }
+    let fit = fit_pairs(&sensor, &reference).unwrap();
+    let chroma = fit.tone.chroma();
+    assert!(chroma.iter().all(|k| *k > 0.9), "no bleaching to learn: {chroma:?}");
 }
 
 /// Pooled pairs of several "photos" recover the camera's matrix, and a photo given that
@@ -1683,7 +1716,7 @@ fn clipped_sky_does_not_dull_the_look() {
     );
     let new_ratio = (colourfulness_ratio(&new, &sensor, &reference, &clipped, mid), colourfulness_ratio(&new, &sensor, &reference, &clipped, bright));
     // with the clipped sky in the pairs, the bright colours lose much of their colour
-    assert!(old_ratio.1 < 0.8, "earlier fit: colourfulness vs camera {old_ratio:?}, chroma {:?}", old.tone.chroma());
+    assert!(old_ratio.1 < 0.85, "earlier fit: colourfulness vs camera {old_ratio:?}, chroma {:?}", old.tone.chroma());
     // without it, the render keeps the camera's colourfulness at every brightness
     for r in [new_ratio.0, new_ratio.1] {
         assert!((0.9..1.1).contains(&r), "colourfulness vs camera {new_ratio:?}, chroma {:?}", new.tone.chroma());

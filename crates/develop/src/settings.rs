@@ -90,6 +90,10 @@ pub enum Process {
     /// Whites and Blacks are display-referred curves that reach into the midtones (the camera-look
     /// path used to apply them at JPEG strength); Highlights and Shadows act on a wider, retuned
     /// range of tones (issue #523).
+    /// Bright saturated colours keep their saturation: a colour past the output gamut or past
+    /// white keeps its luminance and its lowest channel, and leans towards the nearest secondary
+    /// instead of being desaturated towards grey, so a sunset's orange halo no longer bleaches
+    /// (`lightcraft_pipeline::finish::GamutMap`).
     V3,
 }
 

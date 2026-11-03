@@ -9,6 +9,9 @@ use lightcraft_pipeline::finish::{FinishParams, MASK_TERMS, srgb_lut};
 pub const CURVE_N: u32 = 1024;
 
 /// Field name and number of 32-bit words.
+// `finish.wgsl`'s `gamut_keep` takes the share of `gamut_desat` as `y2 * y2 * y`.
+const _: () = assert!(lightcraft_pipeline::finish::KEEP_DESATURATE_POWER == 6, "update gamut_keep in finish.wgsl");
+
 const FIELDS: &[(&str, usize)] = &[
     ("W", 1),
     ("H", 1),
@@ -92,6 +95,8 @@ const FIELDS: &[(&str, usize)] = &[
     ("PROOF_OUT", 9),
     ("PROOF_DEST_WARN", 1),
     ("PROOF_DISP_WARN", 1),
+    // `GamutMap::KeepSaturation` (V3) instead of desaturating towards luminance
+    ("GAMUT_KEEP", 1),
     // first row of a band dispatch (the kernel runs over rows Y0.., see `render`)
     ("Y0", 1),
 ];
@@ -275,6 +280,7 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], present: &Pr
         p.b("PROOF_DEST_WARN", pp.dest_warning);
         p.b("PROOF_DISP_WARN", pp.display_warning);
     }
+    p.b("GAMUT_KEEP", fp.gamut == lightcraft_pipeline::finish::GamutMap::KeepSaturation);
     if let Some((amt, cell, rough, seed)) = fp.grain {
         p.b("GRAIN", true);
         p.f("GRAIN_AMT", amt);

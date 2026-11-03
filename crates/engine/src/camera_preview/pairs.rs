@@ -4,6 +4,9 @@ use super::proxy::DARK_FLOOR;
 use super::tone::highlights;
 use super::tone::{HighlightCheck, ToneFit, highlights_hold};
 use super::{CameraLook, CameraTone, HsvTable, Mat3, Rgb32f, ToneMap, luminance_2020};
+use lightcraft_color::{REC2020, SRGB};
+use lightcraft_pipeline::finish::GamutMap;
+use lightcraft_pipeline::output::OutputSpace;
 
 /// A fit must cut the held-out squared error to below this share of the fallback's.
 pub(super) const MIN_IMPROVEMENT: f64 = 0.7;
@@ -28,6 +31,18 @@ pub(super) fn displayed(scene: [f64; 3], tone: &ToneMap) -> [f64; 3] {
     let o = f64::from(tone.apply(y as f32));
     let k = f64::from(tone.chroma_scale(o as f32));
     scene.map(|v| o + (v * o / y - o) * k)
+}
+
+/// [`displayed`] as a camera JPEG can hold it: brought into sRGB by the finish stage's gamut map
+/// (V3, [`GamutMap::KeepSaturation`]). The chroma curve is fitted on this, so it learns how the
+/// camera bleaches colours, not how far the prediction lies outside the JPEG's gamut: compared
+/// unmapped, a sunset's saturated orange (past sRGB, in range in the JPEG) taught the curve to
+/// desaturate every bright colour. Camera JPEGs in Adobe RGB are mapped into sRGB too.
+pub(super) fn displayed_in_gamut(scene: [f64; 3], tone: &ToneMap) -> [f64; 3] {
+    let d = displayed(scene, tone);
+    let (to, back) = (REC2020.to_space(&SRGB), SRGB.to_space(&REC2020));
+    let (r, _) = GamutMap::KeepSaturation.apply(to.apply(d).map(|v| v as f32), OutputSpace::Srgb.luma(), 1.0);
+    back.apply(r.map(f64::from))
 }
 
 #[cfg(test)]
