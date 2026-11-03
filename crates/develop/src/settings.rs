@@ -87,6 +87,9 @@ pub enum Process {
     /// Like V2, but a lifted toe (`Blacks > 0` on the generic raw curve) adds neutral light: the
     /// per-pixel stage fades deep shadows towards grey instead of scaling their chromaticity up.
     /// Sharpening works at pixel scale, with working Radius and Detail controls.
+    /// Whites and Blacks are display-referred curves that reach into the midtones (the camera-look
+    /// path used to apply them at JPEG strength); Highlights and Shadows act on a wider, retuned
+    /// range of tones (issue #523).
     V3,
 }
 
