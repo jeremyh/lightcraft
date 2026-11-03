@@ -1140,7 +1140,7 @@ fn joint_bands(
     if core >= h {
         // one band: each pixel's result reads only that pixel of the image, so it is written over the image
         // (no new buffer for the whole output)
-        let filtered = joint_band(cx, &img, w, 0, h, noise, brake, plan);
+        let filtered = joint_band(cx, &img, w, 0, h, JointFilter { noise, brake, plan });
         nrcj(cx, "nrcj_recon_in", n, &[n as u32, strength.to_bits()], &filtered, None, &img);
         drop(filtered);
         cx.sync();
@@ -1152,7 +1152,7 @@ fn joint_bands(
     while y0 < h {
         let y1 = (y0 + core.max(1)).min(h);
         let (b0, b1) = (y0.saturating_sub(halo), (y1 + halo).min(h));
-        let filtered = joint_band(cx, &img, w, b0, b1 - b0, noise, brake, plan);
+        let filtered = joint_band(cx, &img, w, b0, b1 - b0, JointFilter { noise, brake, plan });
         let kept = (y1 - y0) * w;
         nrcj(cx, "nrcj_recon", kept, &[kept as u32, strength.to_bits(), (y0 * w) as u32, (b0 * w) as u32], &img, Some(&filtered), &out);
         drop(filtered);
@@ -1167,17 +1167,18 @@ fn joint_bands(
 /// The largest delta `nrcj_dvh` takes (its `JDVH_REACH`).
 const JDVH_REACH: usize = 128;
 
-/// The filtered chroma pairs of rows `b0 .. b0 + bh` of the image, treated as an image of their own.
-fn joint_band(
-    cx: &mut Cx<'_>,
-    img: &Buf,
-    w: usize,
-    b0: usize,
-    bh: usize,
-    noise: &lightcraft_pipeline::nrc_joint::JointNoise,
+/// What the joint colour NR filters a band with: the frame's noise model, the speck brake and the
+/// diffusion plan.
+#[derive(Clone, Copy)]
+struct JointFilter<'a> {
+    noise: &'a lightcraft_pipeline::nrc_joint::JointNoise,
     brake: lightcraft_pipeline::nrc_joint::SpeckBrake,
-    plan: &[(usize, f32)],
-) -> Buf {
+    plan: &'a [(usize, f32)],
+}
+
+/// The filtered chroma pairs of rows `b0 .. b0 + bh` of the image, treated as an image of their own.
+fn joint_band(cx: &mut Cx<'_>, img: &Buf, w: usize, b0: usize, bh: usize, filter: JointFilter<'_>) -> Buf {
+    let JointFilter { noise, brake, plan } = filter;
     let n = w * bh;
     let mut np = vec![n as u32, w as u32, bh as u32];
     np.extend(noise.model.alpha.iter().chain(&noise.model.beta).chain(&noise.ymax).map(|v| v.to_bits()));

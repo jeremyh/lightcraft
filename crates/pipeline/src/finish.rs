@@ -611,31 +611,7 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
             }
 
             // --- tone map on luminance, highlight desaturation
-            let yl = luminance_2020(c);
-            let o = fp.tone.apply(yl);
-            let mut d = if yl > 1e-9 { c.map(|v| v * o / yl) } else { [0.0; 3] };
-
-            // Lifted toe adds neutral light: fade towards grey so shadows stay neutral.
-            let toe = fp.tone.toe();
-            if toe > 0.0 && o > 0.0 {
-                d = fade_lifted_toe(d, o, toe);
-            }
-
-            let k = fp.tone.chroma_scale(o);
-            if k != 1.0 {
-                d = d.map(|v| o + (v - o) * k);
-            }
-            let mx = d[0].max(d[1]).max(d[2]);
-            if mx > peak {
-                d = match fp.gamut {
-                    GamutMap::Desaturate => {
-                        let t = ((mx - peak) / (mx - o).max(1e-6)).clamp(0.0, 1.0);
-                        d.map(|v| v + (o - v) * t)
-                    }
-                    // the share towards white is taken once, by the output map below
-                    GamutMap::KeepSaturation => gamut_keep_saturation(d, LUMA_2020, peak).0,
-                };
-            }
+            let mut d = tone_map_pixel(fp, c, peak);
 
             // --- colour
             d = fp.ops.apply(d, l_sat, l_hue);
@@ -855,6 +831,39 @@ fn adjust_scene_pixel(p: &Prepared, fp: &FinishParams, index: usize, raw: [f32; 
     let l0 = p.log_l.data[index] + fp.ev;
     let log_luminance = if dehaze != 0.0 || l_exp != 0.0 { log_lum(color) } else { l0 };
     (color, log_luminance)
+}
+
+/// The per-pixel tone map of scene-linear `c`: the base tone curve on luminance, the neutral fade
+/// of a lifted toe, the camera look's chroma curve, then colours past `peak` brought back by the
+/// settings' [`GamutMap`].
+#[inline]
+fn tone_map_pixel(fp: &FinishParams, c: [f32; 3], peak: f32) -> [f32; 3] {
+    let yl = luminance_2020(c);
+    let o = fp.tone.apply(yl);
+    let mut d = if yl > 1e-9 { c.map(|v| v * o / yl) } else { [0.0; 3] };
+
+    // Lifted toe adds neutral light: fade towards grey so shadows stay neutral.
+    let toe = fp.tone.toe();
+    if toe > 0.0 && o > 0.0 {
+        d = fade_lifted_toe(d, o, toe);
+    }
+
+    let k = fp.tone.chroma_scale(o);
+    if k != 1.0 {
+        d = d.map(|v| o + (v - o) * k);
+    }
+    let mx = d[0].max(d[1]).max(d[2]);
+    if mx > peak {
+        d = match fp.gamut {
+            GamutMap::Desaturate => {
+                let t = ((mx - peak) / (mx - o).max(1e-6)).clamp(0.0, 1.0);
+                d.map(|v| v + (o - v) * t)
+            }
+            // the share towards white is taken once, by the output map
+            GamutMap::KeepSaturation => gamut_keep_saturation(d, LUMA_2020, peak).0,
+        };
+    }
+    d
 }
 
 fn local_tone_delta(p: &Prepared, fp: &FinishParams, index: usize, base: f32, l1: f32, local: &PixelLocalTerms) -> f32 {
