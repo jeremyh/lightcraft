@@ -86,6 +86,7 @@ pub enum Process {
     V2,
     /// Like V2, but a lifted toe (`Blacks > 0` on the generic raw curve) adds neutral light: the
     /// per-pixel stage fades deep shadows towards grey instead of scaling their chromaticity up.
+    /// Sharpening works at pixel scale, with working Radius and Detail controls.
     V3,
 }
 
