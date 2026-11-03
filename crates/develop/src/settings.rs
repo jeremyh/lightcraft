@@ -84,22 +84,20 @@ pub enum Process {
     /// Highlights and Shadows keep the local contrast of the tones they move: their edge-aware base
     /// is taken of a fine median of log luminance (issue #632).
     V2,
-    /// Like V2, but a lifted toe (`Blacks > 0` on the generic raw curve) adds neutral light: the
-    /// per-pixel stage fades deep shadows towards grey instead of scaling their chromaticity up.
-    /// Sharpening works at pixel scale, with working Radius and Detail controls.
-    /// Whites and Blacks are display-referred curves that reach into the midtones (the camera-look
-    /// path used to apply them at JPEG strength); Highlights and Shadows act on a wider, retuned
-    /// range of tones (issue #523).
-    /// Bright saturated colours keep their saturation: a colour past the output gamut or past
-    /// white keeps its luminance and its lowest channel, and leans towards the nearest secondary
-    /// instead of being desaturated towards grey, so a sunset's orange halo no longer bleaches
-    /// (`lightcraft_pipeline::finish::GamutMap`).
-    /// Dehaze estimates haze from a patch-minimum dark channel, eases in, and never pushes a
-    /// pixel below a tenth of its darkest channel (issue #1237).
-    /// Colour noise reduction filters the linear colour differences R−Y and B−Y, leaving Y alone, with
-    /// edge-aware weights from a denoised guide and a brake for isolated colour specks (issue #815).
-    /// Film grain from a stack of crystal layers (after Aurélien Pierre's model): resolution
-    /// independent, fading out at black and white; V1 and V2 keep their value noise.
+    /// Like V2, with several retunes bundled into one process (`docs/process-versions.md`):
+    /// - a lifted Blacks adds neutral light on raws (deep shadows fade towards grey instead of
+    ///   their cast being scaled up);
+    /// - sharpening works at pixel scale, with working Radius and Detail controls (issue #757);
+    /// - Whites and Blacks are display-referred curves that reach into the midtones, and Highlights
+    ///   and Shadows act on a wider, retuned range of tones (issue #523);
+    /// - bright saturated colours keep their saturation past the output gamut or white
+    ///   (`lightcraft_pipeline::finish::GamutMap`);
+    /// - Dehaze estimates haze from a patch-minimum dark channel, eases in, and never pushes a
+    ///   pixel below a tenth of its darkest channel (issue #1237);
+    /// - colour noise reduction filters the linear colour differences R−Y and B−Y, leaving Y
+    ///   alone, with edge-aware weights from a denoised guide and a speck brake (issue #815);
+    /// - film grain comes from a stack of crystal layers: resolution independent, fading out at
+    ///   black and white.
     V3,
 }
 
