@@ -98,6 +98,8 @@ pub enum Process {
     /// pixel below a tenth of its darkest channel (issue #1237).
     /// Colour noise reduction filters the linear colour differences R−Y and B−Y, leaving Y alone, with
     /// edge-aware weights from a denoised guide and a brake for isolated colour specks (issue #815).
+    /// Film grain from a stack of crystal layers (after Aurélien Pierre's model): resolution
+    /// independent, fading out at black and white; V1 and V2 keep their value noise.
     V3,
 }
 

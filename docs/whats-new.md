@@ -19,6 +19,13 @@
   coloured specks out. New photos get it; photos edited before keep their look until Update to Current Process. A zoomed
   view is smoothed like the same part of the whole photo and the export.
 
+### Film grain that looks like film
+- Grain now comes from a simulated emulsion of crystal layers (after Aurélien Pierre's model): dense, soft and cloudy
+  rather than dots on top of the photo. It fades out towards black and white as on a print, so shadows keep their depth
+  and blown highlights stay clean, and the fit-to-window preview shows the grain you will export. Amount, Size and
+  Roughness keep their meaning and Lightroom Classic's strength and grain size. It is part of a new process version
+  (V3): photos you have already edited keep their grain until you update them to the current process.
+
 ## 2026-10-30
 
 ### The Flatpak may talk to the accessibility bus
