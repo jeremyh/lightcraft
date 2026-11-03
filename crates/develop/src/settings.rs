@@ -94,6 +94,8 @@ pub enum Process {
     /// white keeps its luminance and its lowest channel, and leans towards the nearest secondary
     /// instead of being desaturated towards grey, so a sunset's orange halo no longer bleaches
     /// (`lightcraft_pipeline::finish::GamutMap`).
+    /// Dehaze estimates haze from a patch-minimum dark channel, eases in, and never pushes a
+    /// pixel below a tenth of its darkest channel (issue #1237).
     V3,
 }
 

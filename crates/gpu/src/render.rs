@@ -45,7 +45,7 @@ struct Planes {
     clarity: Option<(u32, Arc<Buf>)>,
     texture: Option<(u32, Arc<Buf>)>,
     sharpen: Option<(local::SharpenKey, Arc<Buf>)>,
-    dark: Option<(u32, Arc<Buf>, f32)>,
+    dark: Option<(u64, Arc<Buf>, f32)>,
     chroma: Option<(u32, Arc<Buf>)>,
 }
 
@@ -345,6 +345,19 @@ fn median_hv(cx: &mut Cx<'_>, p: &Buf, w: usize, h: usize, r: usize) -> Buf {
     cx.run("median_h", &pr, &[Some(p), Some(&tmp)], groups2(w.div_ceil(MEDIAN_K), h, [16, 16]));
     let out = cx.gpu.buffer(w * h);
     cx.run("median_v", &pr, &[Some(&tmp), Some(&out)], groups2(w, h.div_ceil(MEDIAN_K), [16, 16]));
+    out
+}
+
+/// Separable minimum of a plane (`local::min_hv`).
+fn min_hv(cx: &mut Cx<'_>, p: Buf, w: usize, h: usize, r: usize) -> Buf {
+    if r == 0 || w * h == 0 {
+        return p;
+    }
+    let pr = [w as u32, h as u32, 1, r.min(local::DEHAZE_PATCH_MAX) as u32];
+    let tmp = cx.gpu.buffer(w * h);
+    cx.run("min_h", &pr, &[Some(&p), Some(&tmp)], groups2(w, h, [16, 16]));
+    let out = cx.gpu.buffer(w * h);
+    cx.run("min_v", &pr, &[Some(&tmp), Some(&out)], groups2(w, h, [16, 16]));
     out
 }
 
@@ -957,10 +970,11 @@ fn prepare(cx: &mut Cx<'_>, lin: &Buf, plan: &Plan<'_>, req: &RenderRequest, pla
     let (dark, air) = match sig.dark {
         None => (None, 1.0),
         Some(sg) => match &planes.dark {
-            Some((k, d, air)) if *k == sg.to_bits() => (Some(d.clone()), *air),
+            Some((k, d, air)) if *k == local::dark_key(sg, sig.dark_patch) => (Some(d.clone()), *air),
             _ => {
                 let d0 = cx.gpu.buffer(n);
                 map(cx, "dark_k", n, &[], [Some(lin), None, None], &d0);
+                let d0 = min_hv(cx, d0, w, h, sig.dark_patch);
                 let d = gaussian(cx, &d0, w, h, 1, sg);
                 // airlight: a percentile of every 7th value, as on the CPU
                 let m = n.div_ceil(local::AIRLIGHT_STEP);
@@ -969,7 +983,7 @@ fn prepare(cx: &mut Cx<'_>, lin: &Buf, plan: &Plan<'_>, req: &RenderRequest, pla
                 let air = local::airlight_of(cx.read(&sub, m));
                 cx.flush();
                 let b = Arc::new(d);
-                planes.dark = Some((sg.to_bits(), b.clone(), air));
+                planes.dark = Some((local::dark_key(sg, sig.dark_patch), b.clone(), air));
                 (Some(b), air)
             }
         },
