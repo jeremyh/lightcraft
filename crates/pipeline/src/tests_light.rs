@@ -111,10 +111,12 @@ fn v3_positive_sliders_move_the_right_tones() {
 
 #[test]
 fn v3_renders_like_v2_without_its_sliders() {
-    // V3 only changes Highlights, Shadows, Whites and Blacks: an edit without them renders exactly
-    // as on V2
+    // V3's tone changes are Highlights, Shadows, Whites and Blacks: an edit without them renders
+    // exactly as on V2. (V3 also changes sharpening and colour noise reduction, so those are off.)
+    let off = [("detail.sharpenAmount", 0.0), ("detail.nrColor", 0.0)];
     for set in [&[][..], &[("light.exposure", 0.7), ("light.contrast", 35.0), ("effects.clarity", 20.0)]] {
-        assert!(shot(&settings(Process::V2, set)) == shot(&settings(Process::V3, set)), "{set:?}");
+        let set: Vec<_> = off.iter().chain(set).copied().collect();
+        assert!(shot(&settings(Process::V2, &set)) == shot(&settings(Process::V3, &set)), "{set:?}");
     }
 }
 

@@ -346,8 +346,12 @@ pub fn base_tone(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
         // V2 changes the Highlights/Shadows base (`local::tone_base`), not the tone map
         Process::V1 | Process::V2 => curve(l.whites, l.blacks).without_toe(),
         // V3: the curves take Contrast only; Whites and Blacks are display-referred curves on
-        // every source (`tone::whites_blacks_v3`)
-        Process::V3 => curve(0.0, 0.0).with_whites_blacks_v3(l.whites, l.blacks),
+        // every source (`tone::whites_blacks_v3`). On raws a lifted toe adds neutral light
+        // (`ToneMap::toe`, `fade_lifted_toe`, #3407); a display-referred source keeps its colour.
+        Process::V3 => {
+            let tone = curve(0.0, 0.0).with_whites_blacks_v3(l.whites, l.blacks);
+            if info.raw { tone } else { tone.without_toe() }
+        }
     }
 }
 

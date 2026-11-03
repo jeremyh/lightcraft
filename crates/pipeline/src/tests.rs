@@ -37,15 +37,20 @@ fn blacks_lift_fades_deep_shadows_to_neutral() {
         let n = (((x * 31 + y * 17) % 7) as f32 - 3.0) * 0.0002;
         [0.005 + n, 0.0025, 0.006 - n]
     });
-    let info = SourceInfo { raw: true, ..Default::default() };
     let mut s = DevelopSettings::default();
     assert_eq!(s.process.process(), lightcraft_develop::Process::V3);
     s.light.blacks = 40.0;
-    let r = render(&src, &info, &s, &RenderRequest::fit(64, 64)).image;
-    let p = r.get(32, 32);
-    let (rr, gg, bb) = (p[0] as f32, p[1] as f32, p[2] as f32);
-    assert!(rr > 10.0 && gg > 10.0 && bb > 10.0, "not lifted: {p:?}");
-    assert!((rr - bb).abs() < 8.0 && (rr - gg).abs() < 8.0 && (gg - bb).abs() < 8.0, "cast amplified: {p:?}");
+    // the generic raw curve and a camera look: V3's Blacks is the same curve on both (#2313)
+    let camera: crate::tone::CameraTone = serde_json::from_str(include_str!("../../../assets/camera-tone/sony-dro-off.json")).unwrap();
+    for camera_tone in [None, Some(camera)] {
+        let look = camera_tone.is_some();
+        let info = SourceInfo { raw: true, camera_tone, ..Default::default() };
+        let r = render(&src, &info, &s, &RenderRequest::fit(64, 64)).image;
+        let p = r.get(32, 32);
+        let (rr, gg, bb) = (p[0] as f32, p[1] as f32, p[2] as f32);
+        assert!(rr > 10.0 && gg > 10.0 && bb > 10.0, "not lifted (camera look {look}): {p:?}");
+        assert!((rr - bb).abs() < 8.0 && (rr - gg).abs() < 8.0 && (gg - bb).abs() < 8.0, "cast amplified (camera look {look}): {p:?}");
+    }
 }
 
 /// V1 and V2 keep the rendering they always had under a lifted toe: identical to each other, and

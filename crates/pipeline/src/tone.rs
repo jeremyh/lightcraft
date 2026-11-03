@@ -237,6 +237,7 @@ impl ToneMap {
         for o in &mut self.lut {
             *o = if *o <= 1.0 { whites_blacks_v3(*o, w, b) } else { top + (*o - 1.0) };
         }
+        self.toe = blacks_lift_v3_toe(b);
         self
     }
 
@@ -250,7 +251,8 @@ impl ToneMap {
         &self.chroma
     }
 
-    /// Neutral toe lift; zero unless `blacks > 0` on the generic raw curve.
+    /// Neutral toe lift; zero unless `blacks > 0` on the generic raw curve (V1, V2) or on
+    /// process V3's Whites and Blacks ([`ToneMap::with_whites_blacks_v3`]).
     pub fn toe(&self) -> f32 {
         self.toe
     }
@@ -325,9 +327,25 @@ pub fn whites_blacks_v3(o: f32, w: f32, b: f32) -> f32 {
         p = (soft(p) - soft(0.0)) / (soft(1.0) - soft(0.0));
     } else if b > 0.0 {
         let lift = 0.17 * (1.0 - (-3.0 * b).exp()) / (1.0 - (-3.0f32).exp());
-        p += lift * smooth(0.0, 0.08, p) * (1.0 - p).max(0.0).powf(1.25);
+        p += lift * smooth(0.0, V3_LIFT_FULL, p) * (1.0 - p).max(0.0).powf(1.25);
     }
     srgb_to_linear(p.clamp(0.0, 1.0))
+}
+
+/// Encoded value up to which [`whites_blacks_v3`]'s positive Blacks eases in from black.
+const V3_LIFT_FULL: f32 = 0.08;
+
+/// The neutral toe ([`ToneMap::toe`]) of process V3's positive Blacks `b` (0..=1): the light the
+/// lift adds where it is fully in (display-linear, at [`V3_LIFT_FULL`] encoded). The per-pixel
+/// stage fades that much of a deep shadow's luminance towards grey (`finish::fade_lifted_toe`), so
+/// a lifted toe adds neutral light instead of scaling a dark pixel's cast up (#3407). Zero for
+/// `b <= 0`.
+pub fn blacks_lift_v3_toe(b: f32) -> f32 {
+    if b.is_nan() || b <= 0.0 {
+        return 0.0;
+    }
+    let at = lightcraft_color::transfer::srgb_to_linear(V3_LIFT_FULL);
+    (whites_blacks_v3(at, 0.0, b.min(1.0)) - at).max(0.0)
 }
 
 fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
@@ -542,5 +560,21 @@ mod tests {
         assert_eq!(ToneMap::new(0.0, 0.0, -40.0).toe(), 0.0);
         assert_eq!(ToneMap::display(0.0, 0.0, 40.0).toe(), 0.0);
         assert!((ToneMap::new(0.0, 0.0, 40.0).toe() - 0.012).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_v3_blacks_lift_has_a_neutral_toe() {
+        let base = || ToneMap::hdr(0.0, 0.0, 0.0, 1.0);
+        assert_eq!(base().with_whites_blacks_v3(0.0, 0.0).toe(), 0.0);
+        assert_eq!(base().with_whites_blacks_v3(30.0, -40.0).toe(), 0.0);
+        let (t40, t100) = (base().with_whites_blacks_v3(0.0, 40.0).toe(), base().with_whites_blacks_v3(0.0, 100.0).toe());
+        // the light the curve adds where its lift is fully in, growing with the amount
+        assert!(t40 > 0.01 && t40 < t100 && t100 < 0.1, "{t40} {t100}");
+        let at = lightcraft_color::transfer::srgb_to_linear(V3_LIFT_FULL);
+        assert!((whites_blacks_v3(at, 0.0, 0.4) - at - t40).abs() < 1e-6);
+        for b in [f32::NAN, -1.0, 0.0] {
+            assert_eq!(blacks_lift_v3_toe(b), 0.0);
+        }
+        assert!(blacks_lift_v3_toe(f32::INFINITY).is_finite());
     }
 }
