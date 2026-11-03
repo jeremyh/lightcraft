@@ -96,6 +96,8 @@ pub enum Process {
     /// (`lightcraft_pipeline::finish::GamutMap`).
     /// Dehaze estimates haze from a patch-minimum dark channel, eases in, and never pushes a
     /// pixel below a tenth of its darkest channel (issue #1237).
+    /// Colour noise reduction filters the linear colour differences R−Y and B−Y, leaving Y alone, with
+    /// edge-aware weights from a denoised guide and a brake for isolated colour specks (issue #815).
     V3,
 }
 

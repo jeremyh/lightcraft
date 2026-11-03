@@ -12,6 +12,13 @@
 - The starting colour fitted to a raw's camera JPEG no longer dulls bright colours either: photos are re-rendered
   with it the next time they are shown.
 
+### Colour noise reduction (process V3)
+- Colour noise reduction removes colour noise at the raw default 25, where it used to leave most of it, and keeps
+  colour edges at high values instead of bleeding them into fringes (issue #815). It filters the colour differences
+  R−Y and B−Y, leaving brightness exactly as it was, along edges found in a denoised guide, and takes isolated
+  coloured specks out. New photos get it; photos edited before keep their look until Update to Current Process. A zoomed
+  view is smoothed like the same part of the whole photo and the export.
+
 ## 2026-10-30
 
 ### The Flatpak may talk to the accessibility bus
