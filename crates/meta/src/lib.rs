@@ -11,6 +11,7 @@
 //!   HEIF/HEIC/AVIF).
 //! - [`cr3`] — the Canon CR3 container (metadata blocks, XMP, the JPEG and raw tracks).
 //! - [`heif`] — the HEIF/HEIC/AVIF container's Exif and XMP items (no HEVC decoder needed).
+//! - [`picture_style`] — the picture style a raw was shot with (Fujifilm film simulation, Nikon Picture Control).
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -24,6 +25,7 @@ mod gpx;
 pub mod heif;
 mod iptc;
 pub mod mrw;
+pub mod picture_style;
 mod psd;
 pub mod tags;
 mod xmp;
