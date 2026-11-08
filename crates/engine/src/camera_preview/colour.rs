@@ -1,7 +1,8 @@
-use super::look_fit::{fit_dng_tone, fit_preview, look_proxies};
+use super::look_fit::{fit_dng_tone, fit_preview_with, look_proxies};
 use super::mono::{fit_dark_tone, monochrome_look};
 use super::proxy::LensGeometry;
 use super::{CameraLook, CameraTone, CameraTransform, ColorData, D50, D65, Mat3, ProfileLook, REC2020, RawFormat, RawImage, ToneCurve, Xy, bradford};
+use lightcraft_pipeline::{ColourBasis, ColourSource};
 
 /// Long edge of the sensor/JPEG proxy a single photo's look is fitted on (the acceptance gates
 /// below were set at this size).
@@ -51,9 +52,35 @@ pub(crate) fn starting_colour(
     lens: Option<&LensGeometry>,
     embedded: Option<&lightcraft_develop::EmbeddedLens>,
 ) -> (Xy, CameraTransform, Option<CameraLook>) {
+    let (xy, t, look, _) = starting_colour_sourced(raw, bytes, lens, embedded);
+    (xy, t, look)
+}
+
+/// [`starting_colour`], and where the colour came from ([`ColourSource`]): the file's matrices, the camera profile a
+/// look kept the colour of (a look fitted with a profile's colour keeps its matrix), the camera JPEG, the spectral
+/// matrices or the neutral fallback.
+pub(crate) fn starting_colour_sourced(
+    raw: &mut RawImage,
+    bytes: &[u8],
+    lens: Option<&LensGeometry>,
+    embedded: Option<&lightcraft_develop::EmbeddedLens>,
+) -> (Xy, CameraTransform, Option<CameraLook>, ColourSource) {
+    let profile = crate::camera_profiles::for_raw(raw, bytes);
+    // the file's own matrices: `starting_colour_with` keeps them and fits nothing
+    let own = !lightcraft_raw::color::camera_transform(raw, lightcraft_raw::color::as_shot_white_xy(raw)).matrix_is_fallback;
+    let (mut fitted, mut with_profile, mut black_and_white) = (false, false, false);
     let (xy, t, look) = starting_colour_with(
         raw,
-        |raw, t| fit_preview(raw, bytes, t, lens, embedded),
+        |raw, t| {
+            let (look, bw) = fit_preview_with(raw, bytes, t, lens, embedded, profile.as_deref());
+            black_and_white = bw;
+            if let Some(look) = &look {
+                fitted = true;
+                let colour = profile.as_ref().and_then(|p| Some(p.matrix().mul(&t.matrix.inverse()?)));
+                with_profile = colour.is_some_and(|m| m == look.matrix);
+            }
+            (look, bw)
+        },
         |raw, t| monochrome_look(raw, bytes, t, lens, embedded),
         |raw, t| {
             if !file_local_look(raw.format) {
@@ -63,11 +90,25 @@ pub(crate) fn starting_colour(
             fit_dark_tone(&sensor, &reference, &clipped)
         },
     );
+    let basis = match &profile {
+        _ if own => ColourBasis::FileMatrices,
+        Some(p) if fitted && with_profile => ColourBasis::CameraProfile {
+            model: p.model.clone(),
+            style: p.style.clone(),
+            local: !crate::camera_profiles::is_built_in(p),
+            fallback: p.fallback_only,
+        },
+        _ if fitted => ColourBasis::CameraJpeg,
+        // (`starting_colour_with` filled in the spectral matrices when the model has them)
+        _ if !t.matrix_is_fallback => ColourBasis::Spectral,
+        _ => ColourBasis::Neutral,
+    };
+    let source = ColourSource { basis, black_and_white: black_and_white && look.is_some() };
     if look.is_none() && dng_tone_eligible(raw, &t) {
         let look = fit_dng_tone(raw, bytes, &t, embedded);
-        return (xy, t, look);
+        return (xy, t, look, source);
     }
-    (xy, t, look)
+    (xy, t, look, source)
 }
 
 /// Whether the profile's tone curve is absent or the identity (within 0.005 over the range).

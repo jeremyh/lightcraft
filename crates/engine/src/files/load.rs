@@ -157,10 +157,10 @@ fn load_bytes_now(
             None => scale,
         };
         // the source's segmentation mattes (DNG semantic masks), read while the starting colour is fitted
-        let ((xy, t, camera_look), mattes) = rayon::join(
+        let ((xy, t, camera_look, colour_source), mattes) = rayon::join(
             || {
                 with_dng_lens_ops(&mut raw, dng_lens_ops.as_ref(), lens.as_ref(), list3, |raw, embedded| {
-                    crate::camera_preview::starting_colour(raw, &bytes, lens_geometry.as_ref(), embedded)
+                    crate::camera_preview::starting_colour_sourced(raw, &bytes, lens_geometry.as_ref(), embedded)
                 })
             },
             || dng_mattes(&bytes, &info),
@@ -263,6 +263,10 @@ fn load_bytes_now(
                 local_tone,
                 // (the catalog knows the original's size: `media::source_info`)
                 native_long: None,
+                colour_source: Some(match dcp {
+                    Some(_) => lightcraft_pipeline::ColourSource { basis: lightcraft_pipeline::ColourBasis::ImportedProfile, ..colour_source },
+                    None => colour_source,
+                }),
             },
             used_reduced,
         ));

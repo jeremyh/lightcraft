@@ -16,10 +16,7 @@ pub(crate) fn fit_preview(
     lens: Option<&LensGeometry>,
     embedded: Option<&lightcraft_develop::EmbeddedLens>,
 ) -> (Option<CameraLook>, bool) {
-    let profile = raw.metadata.model.as_deref().and_then(|model| {
-        let style = lightcraft_meta::picture_style::read(bytes);
-        crate::camera_profiles::get_styled(model, style.as_ref().and_then(crate::camera_profiles::style_key).as_deref())
-    });
+    let profile = crate::camera_profiles::for_raw(raw, bytes);
     fit_preview_with(raw, bytes, transform, lens, embedded, profile.as_deref())
 }
 

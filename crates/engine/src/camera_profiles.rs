@@ -199,6 +199,18 @@ pub fn get_styled(model: &str, style: Option<&str>) -> Option<Arc<CameraProfile>
     profile
 }
 
+/// The profile for a raw: its model's, for the picture style it was shot with ([`get_styled`]).
+pub fn for_raw(raw: &lightcraft_raw::RawImage, bytes: &[u8]) -> Option<Arc<CameraProfile>> {
+    let model = raw.metadata.model.as_deref()?;
+    let style = lightcraft_meta::picture_style::read(bytes);
+    get_styled(model, style.as_ref().and_then(style_key).as_deref())
+}
+
+/// Whether `profile` is the one built in for its model (not a local one).
+pub fn is_built_in(profile: &CameraProfile) -> bool {
+    bundled(profile.model.trim()).is_some_and(|b| &b == profile)
+}
+
 /// [`get_styled`] without the cache, profiles read from `directory`: the local profile for `style`, else the local
 /// any-style one, else the built-in one.
 fn find(directory: Option<&Path>, model: &str, style: Option<&str>) -> Option<Arc<CameraProfile>> {

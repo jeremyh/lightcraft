@@ -78,6 +78,33 @@ pub struct CameraColor {
     pub developed_for: lightcraft_color::Xy,
 }
 
+/// Where a raw's starting colour came from ([`ColourSource`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ColourBasis {
+    /// The file's own colour matrices (a DNG).
+    FileMatrices,
+    /// A DNG camera profile the user imported and chose for the photo.
+    ImportedProfile,
+    /// A LightCraft camera profile for the photo's model (and picture style): `local` when it is one the user made
+    /// (`lightcraft-cli calibrate`), not a built-in one; `fallback` when it is used only because the photo couldn't
+    /// fit its own colour.
+    CameraProfile { model: String, style: Option<String>, local: bool, fallback: bool },
+    /// Fitted to the photo's own camera JPEG.
+    CameraJpeg,
+    /// Matrices from the camera model's measured spectral sensitivities: no colour fit was accepted.
+    Spectral,
+    /// No colour data for the camera: camera RGB taken as linear sRGB, so colours are muted and approximate.
+    Neutral,
+}
+
+/// How a raw's starting colour was decided: facts for the Profile panel, never part of the render or its cache keys.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ColourSource {
+    pub basis: ColourBasis,
+    /// The camera JPEG is black and white (a monochrome picture style): the photo took only its tone from it.
+    pub black_and_white: bool,
+}
+
 /// Facts about the source the settings are interpreted against.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceInfo {
@@ -108,6 +135,8 @@ pub struct SourceInfo {
     /// Noise reduction sizes its radii in the original's pixels ([`Plan::detail_scale`]), so a
     /// preview looks like the full-size render scaled down (issue #960).
     pub native_long: Option<usize>,
+    /// Where a raw's starting colour came from; `None` until the raw is decoded, and for other files.
+    pub colour_source: Option<ColourSource>,
 }
 
 impl Default for SourceInfo {
@@ -124,6 +153,7 @@ impl Default for SourceInfo {
             mattes: None,
             local_tone: None,
             native_long: None,
+            colour_source: None,
         }
     }
 }

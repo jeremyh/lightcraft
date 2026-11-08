@@ -134,6 +134,13 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             });
         });
     });
+    // where a raw's starting colour came from (the camera JPEG, a camera profile, or an approximation)
+    if let Some(source) = app.session.source_info(id).colour_source {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 10 }).show(ui, |ui| {
+            let r = ui.add(egui::Label::new(egui::RichText::new(colour_source_text(&source)).font(t.font(12.0)).color(t.text_dim)).wrap());
+            crate::widgets::register(ui, "label:cameraColourSource", r.rect);
+        });
+    }
     if d.profile.id != "lc.color" {
         control(app, ui, &d, "profile.amount", true);
         ui.add_space(6.0);
@@ -389,5 +396,51 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     // A pending numeric edit commits on blur before the explicit Reset takes precedence.
     if reset_clicked {
         let _ = app.run("develop.reset", json!({}));
+    }
+}
+
+/// One line saying where a raw's starting colour came from, for the Profile row.
+fn colour_source_text(source: &lightcraft_pipeline::ColourSource) -> String {
+    use lightcraft_pipeline::ColourBasis;
+    let mut text = match &source.basis {
+        ColourBasis::FileMatrices => crate::i18n::tr("Camera colour: the file's own colour data").to_owned(),
+        ColourBasis::ImportedProfile => crate::i18n::tr("Camera colour: your imported camera profile").to_owned(),
+        ColourBasis::CameraProfile { model, style, local: true, .. } => match style {
+            Some(style) => crate::i18n::tr_format!("Camera colour: learned from your {model} photos ({style})", model = model, style = style),
+            None => crate::i18n::tr_format!("Camera colour: learned from your {model} photos", model = model),
+        },
+        ColourBasis::CameraProfile { model, local: false, .. } => {
+            crate::i18n::tr_format!("Camera colour: LightCraft's {model} profile", model = model)
+        }
+        ColourBasis::CameraJpeg => crate::i18n::tr("Camera colour: matched to the camera's own JPEG").to_owned(),
+        ColourBasis::Spectral => crate::i18n::tr("Camera colour: from the camera's measured sensor data").to_owned(),
+        ColourBasis::Neutral => crate::i18n::tr("Camera colour: approximate (no colour data for this camera)").to_owned(),
+    };
+    if source.black_and_white {
+        text.push_str(" · ");
+        text.push_str(crate::i18n::tr("tone from its black-and-white JPEG"));
+    }
+    text
+}
+
+#[cfg(test)]
+mod colour_source_tests {
+    use super::colour_source_text;
+    use lightcraft_pipeline::{ColourBasis, ColourSource};
+
+    #[test]
+    fn every_colour_source_reads_as_one_line() {
+        let line = |basis, black_and_white| colour_source_text(&ColourSource { basis, black_and_white });
+        assert_eq!(
+            line(ColourBasis::Neutral, true),
+            "Camera colour: approximate (no colour data for this camera) · tone from its black-and-white JPEG"
+        );
+        assert_eq!(line(ColourBasis::CameraJpeg, false), "Camera colour: matched to the camera's own JPEG");
+        let learned = ColourBasis::CameraProfile { model: "X-T2".into(), style: None, local: true, fallback: true };
+        assert_eq!(line(learned, true), "Camera colour: learned from your X-T2 photos · tone from its black-and-white JPEG");
+        let styled = ColourBasis::CameraProfile { model: "NIKON Z f".into(), style: Some("KP400".into()), local: true, fallback: false };
+        assert_eq!(line(styled, false), "Camera colour: learned from your NIKON Z f photos (KP400)");
+        let built_in = ColourBasis::CameraProfile { model: "ILCE-7M4".into(), style: None, local: false, fallback: false };
+        assert_eq!(line(built_in, false), "Camera colour: LightCraft's ILCE-7M4 profile");
     }
 }
