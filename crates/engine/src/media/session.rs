@@ -74,7 +74,9 @@ impl crate::Session {
             ^ salt
             ^ profile_salt.rotate_left(29)
             ^ lens.rotate_left(37)
-            ^ decoder.rotate_left(43);
+            ^ decoder.rotate_left(43)
+            // (the camera profiles in use: learned or undone, the photo renders afresh)
+            ^ crate::camera_profiles::cache_key().rotate_left(47);
         let cache = thumb_bucket.map(|b| {
             let mut k = Hasher128::new();
             k.str(&content_key).u64(settings_hash).u64(b as u64).u64(RENDER_CACHE_VERSION);
@@ -145,7 +147,8 @@ impl crate::Session {
             ^ (job.level as u64) << 60
             ^ profile_salt.rotate_left(29)
             ^ lens.rotate_left(37)
-            ^ decoder.rotate_left(43);
+            ^ decoder.rotate_left(43)
+            ^ crate::camera_profiles::cache_key().rotate_left(47);
         Some(job)
     }
 

@@ -139,6 +139,11 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 10 }).show(ui, |ui| {
             let r = ui.add(egui::Label::new(egui::RichText::new(colour_source_text(&source)).font(t.font(12.0)).color(t.text_dim)).wrap());
             crate::widgets::register(ui, "label:cameraColourSource", r.rect);
+            if crate::dialogs::camera_colour_offered(&source)
+                && text_button(ui, "improveCameraColour", "Improve colour for this camera…", false).clicked()
+            {
+                let _ = app.run("dialog.cameraColour", json!({"id": id.0}));
+            }
         });
     }
     if d.profile.id != "lc.color" {

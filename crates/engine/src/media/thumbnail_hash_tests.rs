@@ -140,7 +140,14 @@ fn hashes_match_uncached_keys_and_are_not_recomputed_for_sizes_metadata_or_befor
         // Independent original formula: never asks the new hash cache for expected values.
         let settings = p.develop.hash64();
         let content = Hasher128::new().str(&content_key(&p)).finish().0 as u64;
-        let expected = settings ^ ((b as u64) << 40) ^ ((b as u64) << 20) ^ 1 ^ p.id.0.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ content.rotate_left(17);
+        // (the camera profiles in use are part of it: learned or undone, the photo renders afresh)
+        let expected = settings
+            ^ ((b as u64) << 40)
+            ^ ((b as u64) << 20)
+            ^ 1
+            ^ p.id.0.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            ^ content.rotate_left(17)
+            ^ crate::camera_profiles::cache_key().rotate_left(47);
         let disk = Hasher128::new()
             .str(&content_key(&p))
             .u64(settings)

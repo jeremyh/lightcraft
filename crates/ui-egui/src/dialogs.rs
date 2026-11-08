@@ -8,6 +8,8 @@ use crate::state::Dialog;
 use crate::theme::Tokens;
 use lightcraft_engine::export::{ExportOptions, Resize};
 
+mod camera_colour;
+pub(crate) use camera_colour::offered as camera_colour_offered;
 mod confirm;
 mod cull;
 mod export;
@@ -307,6 +309,7 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
             Dialog::Welcome { .. } => 460.0,
             Dialog::LensDatabase { .. } => 440.0,
             Dialog::ManageEffects { .. } => 560.0,
+            Dialog::CameraColour => 460.0,
             _ => 380.0,
         })
         .show(ctx, |ui| {
@@ -464,6 +467,7 @@ fn dialog_title(app: &LightcraftApp, dlg: &Dialog) -> String {
         Dialog::SmartRules { id: None, .. } => "New Smart Album",
         Dialog::SmartRules { .. } => "Edit Smart Album",
         Dialog::AutoStack { .. } => "Auto-Stack by Capture Time",
+        Dialog::CameraColour => "Improve Camera Colour",
         Dialog::CreatePreset { .. } => "Create Preset",
         Dialog::CopySettings { .. } => "Choose Edit Settings to Copy",
         Dialog::PasteSettings { .. } => "Paste Selected Settings",
@@ -617,6 +621,7 @@ fn fixed_ok_label(app: &LightcraftApp, dlg: &Dialog, informational: bool) -> &'s
         | Dialog::SystemInfo { .. }
         | Dialog::AllMetadata { .. }
         | Dialog::WhatsNew
+        | Dialog::CameraColour
         | Dialog::ManageEffects { .. }
         | Dialog::ViewOptions
         | Dialog::LightroomResult { .. }
@@ -2079,6 +2084,7 @@ fn about_body(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, dlg: &mut 
 fn dialog_content(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, body_max: f32, confirm: &mut bool, close: &mut bool, dlg: &mut Dialog) {
     match dlg {
         Dialog::AutoStack { .. } => auto_stack_body(app, ui, t, dlg),
+        Dialog::CameraColour => camera_colour::body(app, ui, t),
         Dialog::Cull { .. } => cull_body(app, ui, t, dlg),
         Dialog::WhatsNew => whats_new_body(ui, t, dlg),
         Dialog::Welcome { page } => welcome_body(app, ui, t, page, close),

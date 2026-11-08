@@ -7,6 +7,7 @@
 mod activity;
 mod before;
 pub(crate) mod browse;
+mod camera_colour;
 mod color;
 pub(crate) mod convert;
 mod cull;
@@ -182,6 +183,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(face_detect::specs());
         v.extend(face_recognize::specs());
         v.extend(focus::specs());
+        v.extend(camera_colour::specs());
         v.extend(activity::specs());
         v
     })

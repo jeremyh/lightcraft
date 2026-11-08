@@ -237,8 +237,19 @@ fn find(directory: Option<&Path>, model: &str, style: Option<&str>) -> Option<Ar
 /// Changes when the profiles folder's contents change (per process): part of the render cache
 /// keys, so thumbnails rendered before a profile existed are not reused after.
 pub fn cache_key() -> u64 {
-    static KEY: OnceLock<u64> = OnceLock::new();
-    *KEY.get_or_init(|| cache_key_for(dir().as_deref()))
+    *key_cell().lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(|| cache_key_for(dir().as_deref()))
+}
+
+fn key_cell() -> &'static Mutex<Option<u64>> {
+    static KEY: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+    KEY.get_or_init(Default::default)
+}
+
+/// Read the profiles folder afresh: after a profile is written or removed (`crate::camera_learn`). Photos decoded
+/// before keep their look until decoded again; the render cache key changes, so thumbnails are redone.
+pub fn reload() {
+    cache().lock().unwrap_or_else(PoisonError::into_inner).clear();
+    *key_cell().lock().unwrap_or_else(PoisonError::into_inner) = None;
 }
 
 fn cache_key_for(directory: Option<&Path>) -> u64 {

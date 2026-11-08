@@ -1124,6 +1124,41 @@ fn ui_commands_8(app: &mut LightcraftApp, _ctx: &egui::Context, id: &str, p: &Va
             });
             Ok(Value::Null)
         }
+        "dialog.cameraColour" => {
+            // look for the active photo's camera, unless the dialog already has that camera's photos
+            let report = app.session.camera_learn.report();
+            let fresh = app.session.execute("cameraColour.scan", &json!({"id": p.get("id")})).map_err(|e| e.to_string());
+            if let Err(e) = fresh
+                && report.model.is_empty()
+            {
+                return Some(Err(e));
+            }
+            app.ui.dialog = Some(Dialog::CameraColour);
+            Ok(Value::Null)
+        }
+        "cameraColour.addFolder" => {
+            let model = app.session.camera_learn.report().model;
+            if model.is_empty() {
+                return Some(Err("open Improve Colour for This Camera first".into()));
+            }
+            let path = match p.get("path").and_then(Value::as_str) {
+                Some(x) => x.to_string(),
+                None => {
+                    let req = crate::pick::PickRequest::folder(crate::i18n::tr("Look in Another Folder"));
+                    match crate::pick::ask(app, "cameraColour.addFolder", p, "path", req, |s| {
+                        s.pick_folder.as_mut().and_then(|f| f()).map(|x| vec![x])
+                    }) {
+                        crate::pick::Picked::Now(v) => match v.into_iter().next() {
+                            Some(x) => x,
+                            None => return Some(Ok(Value::Null)),
+                        },
+                        crate::pick::Picked::Later => return Some(Ok(Value::Null)),
+                        crate::pick::Picked::Unavailable => return Some(Err("no folder dialog on this platform".into())),
+                    }
+                }
+            };
+            app.session.execute("cameraColour.scan", &json!({"model": model, "folders": [path]})).map_err(|e| e.to_string())
+        }
         "dialog.autoStack" => {
             app.ui.dialog = Some(Dialog::AutoStack { gap: p.get("gap").and_then(Value::as_f64).unwrap_or(60.0) as f32 });
             Ok(Value::Null)

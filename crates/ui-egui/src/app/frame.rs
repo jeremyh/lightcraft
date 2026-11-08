@@ -101,6 +101,10 @@ impl LightcraftApp {
         panels::denoise::pump_background(self, ctx, now);
         panels::faces::pump_background(self, ctx, now);
         focus_scan::pump(self, ctx, now);
+        // profiles learned or undone (Improve Camera Colour): photos open again with them
+        if self.session.camera_colour_pump() {
+            ctx.request_repaint();
+        }
         // auto import: list the watched folder every few seconds (on a worker thread: it may be on
         // a network share), then import what's new like any import (also on a worker thread)
         // a folder that couldn't be read stops being one once another is watched (or none)

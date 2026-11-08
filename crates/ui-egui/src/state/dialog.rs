@@ -165,6 +165,9 @@ pub enum Dialog {
     },
     /// Help ▸ What's New.
     WhatsNew,
+    /// Profile panel ▸ Improve colour for this camera…: learn a camera's colour from the user's photos (the engine's
+    /// `cameraColour.*` job holds its state).
+    CameraColour,
     /// First launch: a short tour of the main views, one page at a time.
     Welcome {
         /// The page on show (0-based; clamped when rendered).

@@ -19,6 +19,7 @@ pub mod activity;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod apple_photos;
 pub mod availability;
+pub mod camera_learn;
 pub(crate) mod camera_preview;
 pub mod camera_profiles;
 pub mod cmd;
@@ -304,6 +305,8 @@ pub struct Session {
     /// Reading focus points for photos imported before they were read (`photo.readFocusPoints`, `focus.pump`).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) focus_scan: focus_scan::FocusScan,
+    /// Learning a camera's colour from the user's photos (`cameraColour.*`).
+    pub camera_learn: camera_learn::CameraLearn,
     /// Copied develop settings (partial JSON) for Paste.
     pub clipboard: Option<Value>,
     /// The folder on disk the [`LibrarySource::Folder`] view browses.
@@ -504,6 +507,7 @@ impl Session {
             faces: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             focus_scan: Default::default(),
+            camera_learn: Default::default(),
             clipboard: None,
             meta_clipboard: None,
             browse: None,
@@ -943,6 +947,16 @@ impl Session {
     // ---------------------------------------------------------------- develop edits
 
     /// The photo being edited (the active photo).
+    /// After learning wrote or removed camera profiles: read them afresh and drop the decoded photos, which open again
+    /// with them. Cheap when nothing changed; the UI calls it every frame. Returns whether anything changed.
+    pub fn camera_colour_pump(&mut self) -> bool {
+        if !self.camera_learn.pump() {
+            return false;
+        }
+        self.media.clear_sources();
+        true
+    }
+
     pub fn active(&self) -> Option<PhotoId> {
         self.selection.active.filter(|id| self.catalog.photo(*id).is_some())
     }

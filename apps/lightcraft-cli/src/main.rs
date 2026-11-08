@@ -351,9 +351,7 @@ fn in_parallel<T: Sync, R: Send>(items: &[T], workers: usize, work: impl Fn(usiz
 }
 
 /// Photos a profile is fitted on, at least.
-const CALIBRATE_MIN_FILES: usize = 5;
-/// `--check` holds out every this-many-th shooting day.
-const CHECK_EVERY_DAY: usize = 5;
+const CALIBRATE_MIN_FILES: usize = lightcraft_engine::camera_learn::MIN_FILES;
 
 fn calibrate(args: &[String]) -> Result<(), String> {
     use lightcraft_engine::camera_profiles::{Pool, save};
@@ -449,11 +447,9 @@ fn calibrate(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `--check` for every group of `pool` with enough photos and days, writing the profiles that pass: one that comes
-/// closer on held-out colour photos than their own fits is used for every photo of its group; one that only comes
-/// closer than the colour photos get when their JPEG can't teach it (a black-and-white JPEG, a rejected fit) is
-/// written as a fallback, used only for those. `skip_any_style`: leave out groups without a style (checked when
-/// grouping by model).
+/// `--check` for every group of `pool` with enough photos and days ([`lightcraft_engine::camera_learn::check_group`]),
+/// writing the profiles that pass: used for every photo of its group, or as a fallback for photos that can't fit their
+/// own colour. `skip_any_style`: leave out groups without a style (checked when grouping by model).
 fn check_groups(
     pool: &lightcraft_engine::camera_profiles::Pool,
     files: &[std::path::PathBuf],
@@ -461,96 +457,45 @@ fn check_groups(
     skip_any_style: bool,
     write: &mut dyn FnMut(&lightcraft_engine::camera_profiles::CameraProfile) -> Result<(), String>,
 ) -> Result<(), String> {
-    use lightcraft_engine::camera_profiles::{PhotoCheck, check_photo};
+    use lightcraft_engine::camera_learn::{Decision, check_group, profile_for};
+    let read = |tag: usize| files.get(tag).and_then(|path| std::fs::read(path).ok());
+    let cancel = std::sync::atomic::AtomicBool::new(false);
     for (group, n) in pool.files() {
         if skip_any_style && group.style.is_none() {
             continue;
         }
-        let days = pool.days(&group);
-        let split = match pool.split_by_day(&group, CHECK_EVERY_DAY, CALIBRATE_MIN_FILES) {
-            Some(Ok(split)) => split,
-            Some(Err(e)) => {
-                println!("{group}: {n} photos on {days} days: {e}");
-                continue;
-            }
-            None => {
+        let check = match check_group(pool, &group, &read, workers, &cancel) {
+            Ok(check) => check,
+            Err(reason) => {
                 if n >= CALIBRATE_MIN_FILES {
-                    println!(
-                        "{group}: {n} photos on {days} days: too few days to check (needs {} or more)",
-                        CHECK_EVERY_DAY / 2 + CHECK_EVERY_DAY + 1
-                    );
+                    println!("{group}: {n} photos on {} days: {reason}", pool.days(&group));
                 }
                 continue;
             }
         };
-        let test: Vec<&std::path::PathBuf> = split.test.iter().filter_map(|&tag| files.get(tag)).collect();
-        let checks: Vec<PhotoCheck> = in_parallel(&test, workers, |_, path| {
-            std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| check_photo(&bytes, &split.profile)).ok().flatten()
-        })
-        .into_iter()
-        .flatten()
-        .collect();
-        let colour = check_verdict(&checks.iter().map(|c| c.colour).collect::<Vec<_>>());
-        let black_and_white = check_verdict(&checks.iter().map(|c| c.black_and_white).collect::<Vec<_>>());
-        let decision = if colour.better {
-            "used for every photo of the group"
-        } else if black_and_white.better {
-            "used where a photo can't fit its own colour"
-        } else {
-            "not written"
+        let decision = match check.decision {
+            Decision::Everywhere => "used for every photo of the group",
+            Decision::Fallback => "used where a photo can't fit its own colour",
+            Decision::NotUsed => "not written",
+        };
+        let summary = |v: &Option<lightcraft_engine::camera_learn::Verdict>| {
+            v.as_ref().map_or_else(|| "no photo could be measured".to_owned(), |v| v.summary())
         };
         println!(
-            "{group}: fitted on {} photos from {} days, checked on {} photos from {} other days: {decision}\n  as colour photos:          {}\n  as black-and-white photos: {}",
-            split.profile.files,
-            split.train_days,
-            checks.len(),
-            split.test_days,
-            colour.summary,
-            black_and_white.summary
+            "{group}: fitted on {} photos from {} days, checked on {} other days: {decision}\n  as colour photos:          {}\n  as black-and-white photos: {}",
+            check.train_photos,
+            check.train_days,
+            check.test_days,
+            summary(&check.colour),
+            summary(&check.black_and_white)
         );
-        if !(colour.better || black_and_white.better) {
-            continue;
-        }
-        match pool.fit_group(&group) {
-            Some(Ok(profile)) => write(&if colour.better { profile } else { profile.as_fallback() })?,
+        match profile_for(pool, &group, &check) {
+            Some(Ok(profile)) => write(&profile)?,
             Some(Err(e)) => eprintln!("calibrate: {e}"),
             None => {}
         }
     }
     Ok(())
-}
-
-struct Verdict {
-    better: bool,
-    summary: String,
-}
-
-/// Whether a profile beat today's colour on held-out photos (`(today, profile)` mean CIEDE2000 each): closer on
-/// average and in the median, and closer on more than half of them.
-fn check_verdict(scores: &[(f64, f64)]) -> Verdict {
-    if scores.is_empty() {
-        return Verdict { better: false, summary: "no held-out photo could be measured".into() };
-    }
-    let n = scores.len() as f64;
-    let mean = |f: fn(&(f64, f64)) -> f64| scores.iter().map(f).sum::<f64>() / n;
-    let median = |f: fn(&(f64, f64)) -> f64| {
-        let mut v: Vec<f64> = scores.iter().map(f).collect();
-        v.sort_by(f64::total_cmp);
-        v.get(v.len() / 2).copied().unwrap_or(f64::NAN)
-    };
-    let (before, after) = (mean(|s| s.0), mean(|s| s.1));
-    let (median_before, median_after) = (median(|s| s.0), median(|s| s.1));
-    let closer = scores.iter().filter(|s| s.1 < s.0).count();
-    let worst = scores.iter().map(|s| s.1 - s.0).fold(f64::NEG_INFINITY, f64::max);
-    let better = after < before && median_after < median_before && closer * 2 > scores.len();
-    Verdict {
-        better,
-        summary: format!(
-            "mean ΔE00 {before:.2} → {after:.2}, median {median_before:.2} → {median_after:.2}, closer on {closer} of {}, worst {worst:+.2}: {}",
-            scores.len(),
-            if better { "better" } else { "not better" }
-        ),
-    }
 }
 
 fn mcp(args: &[String]) -> Result<(), String> {
