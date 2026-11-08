@@ -18,6 +18,11 @@
 //! name with `0300`/`0310` in front of it: a Z f shot with a custom control named `KP400` reads `0310KP400`). Names
 //! are free text for custom controls, so black and white isn't inferred from them.
 //!
+//! **Olympus / OM System** (the `OLYMPUS` maker note): tag `0x0520` PictureMode of the CameraSettings sub-directory
+//! (`0x2020`), its first value (table in [`olympus_mode`]; an E-M10 II shot in Monotone records 256, one in Natural 2).
+//!
+//! Panasonic bodies such as the GF1 record no picture style a black-and-white shot can be told by, so they give none.
+//!
 //! Anything else (another make, a missing or malformed tag, an unknown code) gives no style, never a guess.
 
 use lightcraft_tiff::{Tiff, makernote, tags as t};
@@ -41,6 +46,26 @@ pub struct PictureStyle {
 const FUJI_SATURATION: u16 = 0x1003;
 const FUJI_FILM_MODE: u16 = 0x1401;
 const NIKON_PICTURE_CONTROL: u16 = 0x0023;
+const OLYMPUS_CAMERA_SETTINGS: u16 = 0x2020;
+const OLYMPUS_PICTURE_MODE: u16 = 0x0520;
+
+/// The picture mode an Olympus `PictureMode` code names, and whether it renders in black and white; `None` for a code
+/// the documentation doesn't list.
+pub fn olympus_mode(code: u64) -> Option<(&'static str, bool)> {
+    Some(match code {
+        1 => ("Vivid", false),
+        2 => ("Natural", false),
+        3 => ("Muted", false),
+        4 => ("Portrait", false),
+        5 => ("i-Enhance", false),
+        6 => ("e-Portrait", false),
+        7 => ("Color Creator", false),
+        8 => ("Underwater", false),
+        256 => ("Monotone", true),
+        512 => ("Sepia", true),
+        _ => return None,
+    })
+}
 
 /// The colour film simulation a Fujifilm `FilmMode` code names, or `None` for a code the documentation doesn't list.
 pub fn fujifilm_film(code: u64) -> Option<&'static str> {
@@ -101,8 +126,23 @@ pub fn read(bytes: &[u8]) -> Option<PictureStyle> {
     match note.kind {
         makernote::MakerNoteKind::Fujifilm => fujifilm(&note.ifd),
         makernote::MakerNoteKind::NikonV3 => nikon(note.ifd.bytes(NIKON_PICTURE_CONTROL)?),
+        makernote::MakerNoteKind::OlympusNew | makernote::MakerNoteKind::OlympusOld => olympus(&stream, &note),
         _ => None,
     }
+}
+
+/// The Olympus CameraSettings sub-directory's PictureMode: the sub-directory is an IFD pointer (relative to the note's
+/// base) in new-style notes, or stored inline in old-style ones.
+fn olympus(stream: &[u8], note: &makernote::MakerNote) -> Option<PictureStyle> {
+    let e = note.ifd.get(OLYMPUS_CAMERA_SETTINGS)?;
+    let at = match &e.value {
+        lightcraft_tiff::Value::Undefined(_) | lightcraft_tiff::Value::Byte(_) => e.offset,
+        _ => note.base.checked_add(note.ifd.u64(OLYMPUS_CAMERA_SETTINGS)?)?,
+    };
+    let opts = lightcraft_tiff::ParseOptions { max_ifds: 1, max_depth: 1, follow_children: false, ..Default::default() };
+    let (settings, _) = lightcraft_tiff::parse_ifd_at(stream, at, note.order, note.base, false, &opts).ok()?;
+    let (name, monochrome) = olympus_mode(settings.value(OLYMPUS_PICTURE_MODE)?.get_u64(0)?)?;
+    Some(PictureStyle { name: name.into(), base: None, monochrome: Some(monochrome) })
 }
 
 fn fujifilm(ifd: &lightcraft_tiff::Ifd) -> Option<PictureStyle> {
@@ -200,6 +240,15 @@ mod tests {
         for n in 0..full.len() {
             let _ = nikon(&full[..n]);
         }
+    }
+
+    #[test]
+    fn olympus_picture_modes_name_the_look_and_monotone_is_black_and_white() {
+        assert_eq!(olympus_mode(2), Some(("Natural", false)));
+        assert_eq!(olympus_mode(1), Some(("Vivid", false)));
+        assert_eq!(olympus_mode(256), Some(("Monotone", true)));
+        assert_eq!(olympus_mode(512), Some(("Sepia", true)));
+        assert_eq!(olympus_mode(9), None, "an undocumented code is no style");
     }
 
     #[test]

@@ -19,9 +19,10 @@ pub fn offered(source: &lightcraft_pipeline::ColourSource) -> bool {
 
 /// One line for what a place holds.
 fn place_line(folder: &str, tally: &lightcraft_engine::camera_learn::Tally) -> String {
-    let found = crate::i18n::tr_format!("{n} colour photos from {days} days", n = tally.colour, days = tally.colour_days);
+    // (`colour` counts every photo not known to be black and white: some cameras don't record their picture style)
+    let found = crate::i18n::tr_format!("{n} photos from {days} days", n = tally.colour, days = tally.colour_days);
     let found = if tally.photos > tally.colour {
-        crate::i18n::tr_format!("{found} (and {bw} black and white)", found = found, bw = tally.photos - tally.colour)
+        crate::i18n::tr_format!("{found}, and {bw} black-and-white ones it can't learn from", found = found, bw = tally.photos - tally.colour)
     } else {
         found
     };
@@ -76,7 +77,7 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
         ui.label(place_line(&place.folder, &place.tally));
     }
     if report.places.len() > 1 {
-        ui.label(crate::i18n::tr_format!("In all: {n} colour photos from {days} days", n = report.total.colour, days = report.total.colour_days));
+        ui.label(crate::i18n::tr_format!("In all: {n} photos from {days} days", n = report.total.colour, days = report.total.colour_days));
     }
     if !running && !report.places.is_empty() && report.checks.is_empty() {
         match &report.needs {
@@ -143,8 +144,8 @@ mod tests {
     #[test]
     fn places_and_results_read_as_lines() {
         let tally = Tally { photos: 50, colour: 47, colour_days: 3 };
-        assert_eq!(place_line("", &tally), "In your library: 47 colour photos from 3 days (and 3 black and white)");
-        assert_eq!(place_line("/photos/2019", &Tally { photos: 4, colour: 4, colour_days: 2 }), "In /photos/2019: 4 colour photos from 2 days");
+        assert_eq!(place_line("", &tally), "In your library: 47 photos from 3 days, and 3 black-and-white ones it can't learn from");
+        assert_eq!(place_line("/photos/2019", &Tally { photos: 4, colour: 4, colour_days: 2 }), "In /photos/2019: 4 photos from 2 days");
         let verdict = Verdict { photos: 15, before: 6.7, after: 2.6, median_before: 7.8, median_after: 2.7, closer: 15, worst: -1.2, better: true };
         let check = GroupCheck {
             group: "DMC-GF1".into(),

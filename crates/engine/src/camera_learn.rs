@@ -22,8 +22,11 @@ use serde::Serialize;
 use crate::camera_profiles::{CameraProfile, Group, Pool, check_photo};
 
 /// Bytes read from a file to learn its camera, day and picture style: a Nikon keeps its Picture Control record up to
-/// about 300 KB in; Fujifilm, Panasonic and Olympus raws need 64 KB.
+/// about 300 KB in; Fujifilm and Panasonic raws need 64 KB.
 pub const HEADER_BYTES: u64 = 1 << 20;
+/// The same for an Olympus ORF, whose maker note carries the camera's preview JPEG ahead of its picture mode: up to
+/// about 1.5 MB on the 88 ORFs checked (E-1 to E-M10 II).
+pub const ORF_HEADER_BYTES: u64 = 4 << 20;
 /// A profile is checked on every this-many-th shooting day (in date order).
 pub const CHECK_EVERY_DAY: usize = 5;
 /// Shooting days a group needs for a check: two held out ([`Pool::split_by_day`]).
@@ -52,11 +55,13 @@ pub struct Header {
     pub style: Option<lightcraft_meta::picture_style::PictureStyle>,
 }
 
-/// The camera, day and picture style a raw records, from its first [`HEADER_BYTES`].
+/// The camera, day and picture style a raw records, from its first [`HEADER_BYTES`] ([`ORF_HEADER_BYTES`] for an ORF).
 pub fn read_header(path: &Path) -> Result<Header, String> {
     use std::io::Read;
+    let orf = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("orf"));
+    let limit = if orf { ORF_HEADER_BYTES } else { HEADER_BYTES };
     let mut bytes = Vec::new();
-    std::fs::File::open(path).and_then(|f| f.take(HEADER_BYTES).read_to_end(&mut bytes)).map_err(|e| format!("{}: {e}", path.display()))?;
+    std::fs::File::open(path).and_then(|f| f.take(limit).read_to_end(&mut bytes)).map_err(|e| format!("{}: {e}", path.display()))?;
     let meta = lightcraft_meta::extract(&bytes);
     let model = meta.model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty()).ok_or_else(|| format!("{}: no camera model", path.display()))?;
     Ok(Header {
@@ -222,9 +227,11 @@ pub fn profile_for(pool: &Pool, group: &Group, check: &GroupCheck) -> Option<Res
 pub struct Tally {
     /// Raws of the camera.
     pub photos: usize,
-    /// Of those, the ones not shot in a black-and-white style (the ones colour can be learned from).
+    /// Of those, the ones not known to be shot in a black-and-white style (the ones colour can be learned from: a
+    /// camera that doesn't record its picture style counts all; learning leaves out the black-and-white JPEGs among
+    /// them).
     pub colour: usize,
-    /// Days the colour photos were shot on.
+    /// Days those photos were shot on.
     pub colour_days: usize,
 }
 
@@ -328,7 +335,7 @@ fn needs(total: &Tally) -> Option<String> {
     if total.photos > 0 && total.colour == 0 {
         Some("all of these photos are black and white: colour can only be learned from colour photos of this camera".into())
     } else if total.colour_days < MIN_DAYS || total.colour < MIN_FILES * 2 {
-        Some(format!("colour photos from at least {MIN_DAYS} different days are needed ({} found)", total.colour_days))
+        Some(format!("photos from at least {MIN_DAYS} different days are needed, not counting black-and-white ones ({} found)", total.colour_days))
     } else {
         None
     }

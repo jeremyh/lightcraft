@@ -559,6 +559,7 @@ impl Session {
     /// The imported profiles as (id, name, group): LUT profiles, then camera profiles (`.dcp`). A camera profile
     /// whose file is missing or damaged (not loaded when the library opened) is left out, so it can't be chosen; its
     /// entry stays and it is offered again once the file is back.
+    /// Then the camera looks learned from the user's photos, for the active photo's camera.
     pub fn imported_profiles(&self) -> Vec<(String, String, String)> {
         let luts = self.lut_profiles.iter().map(|p| (p.id.clone(), p.name.clone(), p.group.clone()));
         let dcps = self
@@ -566,7 +567,13 @@ impl Session {
             .iter()
             .filter(|p| self.media.camera_profiles.contains_key(&p.id))
             .map(|p| (p.id.clone(), p.name.clone(), crate::cmd::dcp_profiles::DCP_GROUP.to_string()));
-        let looks = self.camera_looks.iter().map(|l| (l.id.clone(), l.name.clone(), crate::camera_profiles::LOOK_GROUP.to_string()));
+        // a learned look only for the active photo's camera (another camera's look would render it as shot)
+        let camera = self.active().and_then(|id| self.catalog.photo(id)).map(|p| p.meta.camera.trim().to_lowercase()).unwrap_or_default();
+        let looks = self
+            .camera_looks
+            .iter()
+            .filter(|l| camera.ends_with(&l.model.to_lowercase()))
+            .map(|l| (l.id.clone(), l.name.clone(), crate::camera_profiles::LOOK_GROUP.to_string()));
         luts.chain(dcps).chain(looks).collect()
     }
 
@@ -619,6 +626,29 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_looks_are_offered_for_the_active_photos_camera_only() {
+        let mut s = crate::Session::with_demo();
+        let look = |model: &str, style: &str| crate::camera_profiles::Look {
+            id: crate::camera_profiles::look_id(model, style),
+            name: format!("{model} · {style}"),
+            model: model.into(),
+            style: style.into(),
+        };
+        s.camera_looks = vec![look("X-T2", "Provia/Standard"), look("NIKON Z f", "KP400")];
+        let id = s.active().unwrap();
+        let mut meta = s.catalog.photo(id).unwrap().meta.clone();
+        meta.camera = "FUJIFILM X-T2".into();
+        s.commit("setup", lightcraft_catalog::Op::SetMeta { id, meta: Box::new(meta) }).unwrap();
+        let offered: Vec<String> = s.imported_profiles().into_iter().filter(|p| p.2 == crate::camera_profiles::LOOK_GROUP).map(|p| p.0).collect();
+        assert_eq!(offered, vec!["look:X-T2@Provia/Standard".to_string()]);
+        // every look still has its name (a photo set to another camera's look keeps its label)
+        assert_eq!(s.profile_info("look:NIKON Z f@KP400"), Some(("NIKON Z f · KP400", crate::camera_profiles::LOOK_GROUP)));
+        // and can be chosen by id
+        assert!(s.execute("develop.profile", &serde_json::json!({"id": "look:X-T2@Provia/Standard"})).is_ok());
+        assert!(s.execute("develop.profile", &serde_json::json!({"id": "look:X-T2@Nope"})).is_err());
+    }
 
     #[test]
     fn builtin_presets_parse_and_apply() {

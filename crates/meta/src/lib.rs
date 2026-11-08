@@ -11,7 +11,7 @@
 //!   HEIF/HEIC/AVIF).
 //! - [`cr3`] — the Canon CR3 container (metadata blocks, XMP, the JPEG and raw tracks).
 //! - [`heif`] — the HEIF/HEIC/AVIF container's Exif and XMP items (no HEVC decoder needed).
-//! - [`picture_style`] — the picture style a raw was shot with (Fujifilm film simulation, Nikon Picture Control).
+//! - [`picture_style`] — the picture style a raw was shot with (Fujifilm film simulation, Nikon Picture Control, Olympus picture mode).
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 

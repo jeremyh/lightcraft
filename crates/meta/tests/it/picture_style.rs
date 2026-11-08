@@ -26,6 +26,10 @@ fn corpus_raws_report_the_picture_style_they_were_shot_with() {
         ("coverage-3581.nef", Some("AUTO"), Some("AUTO"), None),
         // before Picture Controls: nothing to read
         ("nef-nikon-d200.nef", None, None, None),
+        // Olympus PictureMode (CameraSettings 0x0520); an E-1 records none
+        ("orf-olympus-em10iii.orf", Some("Natural"), None, Some(false)),
+        ("orf-olympus-xz-10.orf", Some("Vivid"), None, Some(false)),
+        ("orf-olympus-e1.orf", None, None, None),
     ];
     let mut checked = 0;
     for &(file, name, base, monochrome) in expected {

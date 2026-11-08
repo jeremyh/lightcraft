@@ -109,7 +109,7 @@ USAGE:
   lightcraft-cli controls [--json]   list every develop control id with its range
   lightcraft-cli calibrate [--max N] [--out DIR] [--by-model] [--check] FOLDERS/FILES…
       Fit a colour profile per camera model and picture style (Fujifilm film simulation, Nikon
-      Picture Control) from raw files and their embedded camera JPEGs (Sony ARW, Nikon NEF,
+      Picture Control, Olympus picture mode) from raw files and their embedded camera JPEGs (Sony ARW, Nikon NEF,
       Fujifilm RAF, Canon CRW, Panasonic RW2, Olympus ORF): up to N files spread over the folders
       (default 300; 0 = all),
       written as <model>@<style>.json, or <model>.json when the style is unknown, to DIR (default:
