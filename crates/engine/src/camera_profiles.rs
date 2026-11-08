@@ -245,10 +245,91 @@ fn key_cell() -> &'static Mutex<Option<u64>> {
     KEY.get_or_init(Default::default)
 }
 
+/// The profile-menu id of the look learned for camera `model`'s picture style `style` ([`looks`]).
+pub fn look_id(model: &str, style: &str) -> String {
+    format!("{LOOK_PREFIX}{}@{}", model.trim(), style.trim())
+}
+
+/// Profile-menu ids of learned looks start with this.
+pub const LOOK_PREFIX: &str = "look:";
+/// The profile-menu group learned looks are listed in.
+pub const LOOK_GROUP: &str = "Camera Looks";
+
+/// `(model, style)` of a look id ([`look_id`]).
+fn parse_look(id: &str) -> Option<(&str, &str)> {
+    let (model, style) = id.strip_prefix(LOOK_PREFIX)?.split_once('@')?;
+    (!model.is_empty() && !style.is_empty()).then_some((model, style))
+}
+
+/// A picture style's look learned from the user's photos, offered in the Profile menu ([`looks`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Look {
+    pub id: String,
+    /// "X-T2 · Provia/Standard".
+    pub name: String,
+    pub model: String,
+    pub style: String,
+}
+
+fn look_cache() -> &'static Mutex<HashMap<String, Option<(Arc<CameraProfile>, u64)>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<(Arc<CameraProfile>, u64)>>>> = OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// The profile behind look `id` and a fingerprint of it (never 0): a style profile in the profiles folder. Read once
+/// per process (until [`reload`]).
+fn look_profile(id: &str) -> Option<(Arc<CameraProfile>, u64)> {
+    let mut cache = look_cache().lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(hit) = cache.get(id) {
+        return hit.clone();
+    }
+    let found = parse_look(id).and_then(|(model, style)| {
+        let profile = find(dir().as_deref(), model, Some(style)).filter(|p| p.style.as_deref() == Some(style))?;
+        let json = serde_json::to_string(profile.as_ref()).ok()?;
+        let fingerprint = (lightcraft_preview::Hasher128::new().str(&json).finish().0 as u64) | 1;
+        Some((profile, fingerprint))
+    });
+    cache.insert(id.to_owned(), found.clone());
+    found
+}
+
+/// The learned look `id` for a photo of `camera` (the catalog's camera: maker, then model): `None` when `id` isn't a
+/// look id, the look is gone, or it was learned for another camera (a look pasted onto another camera's photo).
+pub fn look_for(id: &str, camera: &str) -> Option<(Arc<CameraProfile>, u64)> {
+    let (model, _) = parse_look(id)?;
+    camera.trim().to_lowercase().ends_with(&model.to_lowercase()).then(|| look_profile(id)).flatten()
+}
+
+/// The fingerprint of look `id` (render keys), `None` when it isn't one or is gone.
+pub fn look_fingerprint(id: &str) -> Option<u64> {
+    parse_look(id)?;
+    look_profile(id).map(|(_, f)| f)
+}
+
+/// The learned looks in the profiles folder: its style profiles, by model then style.
+pub fn looks() -> Vec<Look> {
+    let Some(directory) = dir() else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(&directory) else { return Vec::new() };
+    let mut looks: Vec<Look> = entries
+        .flatten()
+        .take(4096)
+        .filter(|e| e.file_name().to_string_lossy().contains('@') && e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| load(&e.path()).ok())
+        .filter_map(|p| {
+            let style = p.style.clone()?;
+            Some(Look { id: look_id(&p.model, &style), name: format!("{} · {style}", p.model), model: p.model, style })
+        })
+        .collect();
+    looks.sort_by(|a, b| (&a.model, &a.style).cmp(&(&b.model, &b.style)));
+    looks.dedup_by(|a, b| a.id == b.id);
+    looks
+}
+
 /// Read the profiles folder afresh: after a profile is written or removed (`crate::camera_learn`). Photos decoded
 /// before keep their look until decoded again; the render cache key changes, so thumbnails are redone.
 pub fn reload() {
     cache().lock().unwrap_or_else(PoisonError::into_inner).clear();
+    look_cache().lock().unwrap_or_else(PoisonError::into_inner).clear();
     *key_cell().lock().unwrap_or_else(PoisonError::into_inner) = None;
 }
 
@@ -641,6 +722,20 @@ mod tests {
         // a profile without the field is an override, as every file written before it
         let plain = serde_json::to_string(&profile()).unwrap();
         assert!(!plain.contains("fallback_only") && !parse(plain.as_bytes(), "plain").unwrap().fallback_only);
+    }
+
+    #[test]
+    fn look_ids_name_the_camera_and_style_and_never_apply_to_another_camera() {
+        let id = look_id("X-T2", "Provia/Standard");
+        assert_eq!(id, "look:X-T2@Provia/Standard");
+        assert_eq!(parse_look(&id), Some(("X-T2", "Provia/Standard")));
+        assert_eq!(parse_look("look:X-T2"), None);
+        assert_eq!(parse_look("look:@Velvia"), None);
+        assert_eq!(parse_look("dcp:abc"), None);
+        // a look pasted onto another camera's photo is not used there
+        assert!(look_for(&id, "NIKON CORPORATION NIKON Z f").is_none());
+        assert!(look_for("lc.vivid", "FUJIFILM X-T2").is_none());
+        assert!(look_fingerprint("lc.vivid").is_none());
     }
 
     /// A pool of `days.len()` photos (one per entry, shot on that day) whose pairs come from one camera matrix.

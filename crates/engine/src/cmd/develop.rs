@@ -639,6 +639,7 @@ pub fn specs() -> Vec<CommandSpec> {
             if !crate::presets::PROFILES.iter().any(|x| x.id == id)
                 && !s.lut_profiles.iter().any(|x| x.id == id)
                 && !s.dcp_profiles.iter().any(|x| x.id == id)
+                && !s.camera_looks.iter().any(|x| x.id == id)
             {
                 return Err(bad("develop.profile", format!("unknown profile `{id}`")));
             }
@@ -657,7 +658,11 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!("profile.favorite", "Favorite Profile", [], None, "{id, favorite?: bool} (toggles when omitted)", always, |s, p| {
             let id = str_param(p, "id").ok_or_else(|| bad("profile.favorite", "missing id"))?.to_string();
-            if crate::presets::profile(&id).is_none() && !s.lut_profiles.iter().any(|x| x.id == id) && !s.dcp_profiles.iter().any(|x| x.id == id) {
+            if crate::presets::profile(&id).is_none()
+                && !s.lut_profiles.iter().any(|x| x.id == id)
+                && !s.dcp_profiles.iter().any(|x| x.id == id)
+                && !s.camera_looks.iter().any(|x| x.id == id)
+            {
                 return Err(bad("profile.favorite", format!("unknown profile `{id}`")));
             }
             let on = s.profile_favorites.contains(&id);

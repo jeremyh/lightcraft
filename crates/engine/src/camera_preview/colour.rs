@@ -1,6 +1,7 @@
-use super::look_fit::{fit_dng_tone, fit_preview_with, look_proxies};
-use super::mono::{fit_dark_tone, monochrome_look};
+use super::look_fit::{fit_dng_tone, fit_preview_with, look_proxies, with_dro_off_tone, without_clipped};
+use super::mono::{fit_dark_tone, fit_tone_only_with, monochrome_look};
 use super::proxy::LensGeometry;
+use super::tone::{HighlightCheck, highlights};
 use super::{CameraLook, CameraTone, CameraTransform, ColorData, D50, D65, Mat3, ProfileLook, REC2020, RawFormat, RawImage, ToneCurve, Xy, bradford};
 use lightcraft_pipeline::{ColourBasis, ColourSource};
 
@@ -52,19 +53,58 @@ pub(crate) fn starting_colour(
     lens: Option<&LensGeometry>,
     embedded: Option<&lightcraft_develop::EmbeddedLens>,
 ) -> (Xy, CameraTransform, Option<CameraLook>) {
-    let (xy, t, look, _) = starting_colour_sourced(raw, bytes, lens, embedded);
+    let (xy, t, look, _) = starting_colour_sourced(raw, bytes, lens, embedded, None);
     (xy, t, look)
+}
+
+/// The start of a raw developed with learned look `p`: the style's colour (the profile's matrix and hue/saturation
+/// table) on the photo's own brightness and contrast, its tone fitted to its own camera JPEG by luminance only (as a
+/// black-and-white JPEG's is, [`fit_tone_only_with`]). A tone pooled from the style's photos was tried and rendered
+/// them far from their camera JPEGs (mean CIEDE2000 5.6 to 8.5 on held-out X-T2 photos, against 2.2 to 3.5 with the
+/// photo's own tone): exposure and the camera's dynamic-range and tone settings vary from shot to shot. `None` for a
+/// raw with colour data of its own, one whose colour isn't fitted to its JPEG, or one whose tone can't be fitted
+/// (it then starts as it would without the look).
+fn chosen_look(
+    raw: &RawImage,
+    bytes: &[u8],
+    lens: Option<&LensGeometry>,
+    embedded: Option<&lightcraft_develop::EmbeddedLens>,
+    p: &crate::camera_profiles::CameraProfile,
+) -> Option<(Xy, CameraTransform, Option<CameraLook>, ColourSource)> {
+    if !file_local_look(raw.format) {
+        return None;
+    }
+    let xy = lightcraft_raw::color::as_shot_white_xy(raw);
+    let t = lightcraft_raw::color::camera_transform(raw, xy);
+    if !t.matrix_is_fallback {
+        return None;
+    }
+    let colour = (p.matrix().mul(&t.matrix.inverse()?), p.hue_sat.clone());
+    let (sensor, reference, clipped) = look_proxies(raw, bytes, &t, lens, embedded)?;
+    let dro = lightcraft_raw::embedded_preview_dynamic_range_optimized(bytes) == Some(true);
+    let bright = HighlightCheck { pairs: highlights(&sensor, &reference), dro, grey: true };
+    let unclipped = without_clipped(&sensor, &clipped);
+    let look = fit_tone_only_with(unclipped.as_ref().unwrap_or(&sensor), &reference, Some(colour), &bright)?;
+    let look = if dro { with_dro_off_tone(look) } else { look };
+    let basis = ColourBasis::ChosenLook { model: p.model.clone(), style: p.style.clone().unwrap_or_default() };
+    Some((xy, t, Some(look), ColourSource { basis, black_and_white: false }))
 }
 
 /// [`starting_colour`], and where the colour came from ([`ColourSource`]): the file's matrices, the camera profile a
 /// look kept the colour of (a look fitted with a profile's colour keeps its matrix), the camera JPEG, the spectral
 /// matrices or the neutral fallback.
+/// `chosen`: a learned look the user chose for the photo ([`crate::camera_profiles::look_id`]): a raw without colour
+/// data of its own starts from that style's colour, with only its tone fitted to its own JPEG ([`chosen_look`]).
 pub(crate) fn starting_colour_sourced(
     raw: &mut RawImage,
     bytes: &[u8],
     lens: Option<&LensGeometry>,
     embedded: Option<&lightcraft_develop::EmbeddedLens>,
+    chosen: Option<&crate::camera_profiles::CameraProfile>,
 ) -> (Xy, CameraTransform, Option<CameraLook>, ColourSource) {
+    if let Some(look) = chosen.and_then(|p| chosen_look(raw, bytes, lens, embedded, p)) {
+        return look;
+    }
     let profile = crate::camera_profiles::for_raw(raw, bytes);
     // the file's own matrices: `starting_colour_with` keeps them and fits nothing
     let own = !lightcraft_raw::color::camera_transform(raw, lightcraft_raw::color::as_shot_white_xy(raw)).matrix_is_fallback;

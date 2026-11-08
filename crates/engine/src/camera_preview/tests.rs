@@ -934,6 +934,33 @@ fn corpus_rw2_and_orf_pool_pairs_away_from_edges() {
     }
 }
 
+/// A learned look chosen for a photo (Profile menu ▸ Camera Looks) gives a raw that style's colour, with only its tone
+/// fitted to its own camera JPEG, and says so.
+#[test]
+fn corpus_a_chosen_look_gives_the_styles_colour() {
+    let dir = std::env::var_os("LIGHTCRAFT_CORPUS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus"))
+        .join("raw");
+    let name = "raf-fuji-xt2-865.raf";
+    let Ok(bytes) = std::fs::read(dir.join(name)) else {
+        lightcraft_testkit::skip!(Corpus, "{name} absent");
+        return;
+    };
+    let matrix = Mat3([[1.5, -0.3, -0.2], [-0.2, 1.4, -0.2], [0.0, -0.3, 1.3]]);
+    let profile = crate::camera_profiles::CameraProfile::new("X-T2", 50, 1000, matrix, None).with_style(Some("Provia/Standard".into()));
+    let mut raw = lightcraft_raw::decode(&bytes).unwrap();
+    let (_, t, look, source) = super::colour::starting_colour_sourced(&mut raw, &bytes, None, None, Some(&profile));
+    let look = look.expect("the chosen look");
+    assert_eq!(look.matrix, matrix.mul(&t.matrix.inverse().unwrap()), "the style's colour, not the photo's own fit");
+    assert_eq!(source.basis, lightcraft_pipeline::ColourBasis::ChosenLook { model: "X-T2".into(), style: "Provia/Standard".into() });
+    // without a choice the photo fits its own colour as before
+    let mut raw = lightcraft_raw::decode(&bytes).unwrap();
+    let (_, _, own, source) = super::colour::starting_colour_sourced(&mut raw, &bytes, None, None, None);
+    assert!(own.is_some_and(|own| own.matrix != look.matrix));
+    assert!(!matches!(source.basis, lightcraft_pipeline::ColourBasis::ChosenLook { .. }));
+}
+
 /// The colour precedence on public raws (each skipped without its corpus file): a photo whose JPEG fit is
 /// accepted keeps it and its colour data; one whose fit fails takes its spectral matrices when its model has
 /// them; a DNG keeps its own matrices. White balance stays relative to the as-shot look for every raw without

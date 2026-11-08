@@ -1,6 +1,6 @@
 use super::settings_hash::SettingsHashes;
 use super::source::{DecodedSource, DenoiseSpec, PairLoader, RENDERED_MEM_BYTES, SourceLevel, SourceRef, THUMB_SOURCE_BYTES};
-use super::{Arc, DcpProfile, DevelopSettings, HashMap, Hasher128, Lru, MediaCache, Photo, PhotoId, PreviewCache, Rgb32f, Source, SourceInfo};
+use super::{Arc, DevelopSettings, HashMap, Hasher128, Lru, MediaCache, Photo, PhotoId, PreviewCache, Rgb32f, Source, SourceInfo};
 
 /// The photos that have a cached denoised picture for the denoise model in use. Only memory: nothing here touches the
 /// file system, so it can be asked on the UI thread.
@@ -320,7 +320,7 @@ impl MediaCache {
     }
 
     /// [`Self::source_ref_with`] developed with camera profile `wanted` (none: the file's own colour).
-    fn source_ref_for(&mut self, p: &Photo, level: SourceLevel, cached: bool, wanted: Option<(String, Arc<DcpProfile>)>) -> SourceRef {
+    fn source_ref_for(&mut self, p: &Photo, level: SourceLevel, cached: bool, wanted: Option<(String, super::ChosenCamera)>) -> SourceRef {
         let mut r = self.source_ref_plain(p, level, cached, wanted);
         if let (SourceRef::File { denoise, .. }, Some((spec, loader))) = (&mut r, self.denoise.get(p.id)) {
             *denoise = Some((spec.clone(), loader.clone()));
@@ -333,7 +333,7 @@ impl MediaCache {
         matches!(&p.source, Source::File { path } if self.availability.is_offline(path))
     }
 
-    fn source_ref_plain(&mut self, p: &Photo, level: SourceLevel, cached: bool, wanted: Option<(String, Arc<DcpProfile>)>) -> SourceRef {
+    fn source_ref_plain(&mut self, p: &Photo, level: SourceLevel, cached: bool, wanted: Option<(String, super::ChosenCamera)>) -> SourceRef {
         let outliers = p.develop.removes_hot_pixels();
         // (a source developed with another camera profile, or none, doesn't stand in; a smart preview
         // has no camera profile, and decoding it again gives the same picture, so it stands in while the
@@ -394,17 +394,23 @@ impl MediaCache {
 
     /// The imported camera profile photo `p` develops with, when its profile setting names one this library has: what a
     /// source decoded with it is tagged with (its id and the file's fingerprint), and the profile.
-    pub fn camera_profile_of(&self, p: &Photo) -> Option<(String, Arc<DcpProfile>)> {
+    pub fn camera_profile_of(&self, p: &Photo) -> Option<(String, super::ChosenCamera)> {
         let id = &p.develop.profile.id;
+        if let Some((look, fingerprint)) = crate::camera_profiles::look_for(id, &p.meta.camera) {
+            return Some((format!("{id}#{fingerprint:016x}"), super::ChosenCamera::Look(look)));
+        }
         if !crate::cmd::dcp_profiles::is_dcp_id(id) {
             return None;
         }
-        self.camera_profiles.get(id).map(|d| (format!("{id}#{:016x}", d.fingerprint), d.profile.clone()))
+        self.camera_profiles.get(id).map(|d| (format!("{id}#{:016x}", d.fingerprint), super::ChosenCamera::Dcp(d.profile.clone())))
     }
 
     /// What a render with profile `profile_id` adds to its cache keys: the imported camera profile's fingerprint, 0
     /// for any other profile and for a camera profile this library no longer has (it renders without it).
     pub fn camera_profile_salt(&self, profile_id: &str) -> u64 {
+        if let Some(fingerprint) = crate::camera_profiles::look_fingerprint(profile_id) {
+            return fingerprint;
+        }
         if !crate::cmd::dcp_profiles::is_dcp_id(profile_id) {
             return 0;
         }

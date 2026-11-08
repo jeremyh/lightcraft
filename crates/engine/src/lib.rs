@@ -307,6 +307,9 @@ pub struct Session {
     pub(crate) focus_scan: focus_scan::FocusScan,
     /// Learning a camera's colour from the user's photos (`cameraColour.*`).
     pub camera_learn: camera_learn::CameraLearn,
+    /// The picture-style looks learned from the user's photos ([`camera_profiles::looks`]), offered in the Profile menu
+    /// (group [`camera_profiles::LOOK_GROUP`]); read again when learning writes profiles.
+    pub camera_looks: Vec<camera_profiles::Look>,
     /// Copied develop settings (partial JSON) for Paste.
     pub clipboard: Option<Value>,
     /// The folder on disk the [`LibrarySource::Folder`] view browses.
@@ -508,6 +511,8 @@ impl Session {
             #[cfg(not(target_arch = "wasm32"))]
             focus_scan: Default::default(),
             camera_learn: Default::default(),
+            // (tests never read the user's own profiles folder)
+            camera_looks: if cfg!(test) { Vec::new() } else { camera_profiles::looks() },
             clipboard: None,
             meta_clipboard: None,
             browse: None,
@@ -954,6 +959,7 @@ impl Session {
             return false;
         }
         self.media.clear_sources();
+        self.camera_looks = camera_profiles::looks();
         true
     }
 

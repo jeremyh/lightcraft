@@ -92,6 +92,9 @@ pub(super) fn source_edge_needed(p: &Photo, settings: &DevelopSettings, apply_cr
 pub struct RawDecode<'a> {
     /// The photo's imported camera profile ([`crate::cmd::dcp_profiles`]): a raw file is developed with its colour model.
     pub dcp: Option<&'a DcpProfile>,
+    /// A picture style's look learned from the user's photos, chosen for the photo ([`crate::camera_profiles::look_id`]):
+    /// a raw file starts from that style's colour instead of a fit to its own camera JPEG.
+    pub look: Option<&'a crate::camera_profiles::CameraProfile>,
     /// Replace a raw's single outlier photosites first ([`DevelopSettings`] `detail.nr_outliers`).
     pub outliers: bool,
 }
@@ -269,8 +272,8 @@ pub enum SourceRef {
         fallback: Option<std::path::PathBuf>,
         /// The photo has a cached denoised picture: load it with the plain one (see [`PairLoader`]).
         denoise: Option<(DenoiseSpec, PairLoader)>,
-        /// The photo's imported camera profile (id and profile): its raw file is developed with it.
-        camera_profile: Option<(String, Arc<DcpProfile>)>,
+        /// The photo's chosen camera model (id and model): its raw file is developed with it.
+        camera_profile: Option<(String, super::ChosenCamera)>,
         /// Replace a raw's single outlier photosites before developing it (`detail.nr_outliers`).
         outliers: bool,
         /// A thumbnail's loader, used instead of `loader` (see [`ReducedLoader`]); `None` for every other job.
@@ -301,7 +304,17 @@ impl SourceRef {
             }
             SourceRef::Demo { scene, max_edge } => crate::demo::scene_pixels(scene, *max_edge)?,
             SourceRef::File { path, max_edge, loader, fallback, denoise, camera_profile, outliers, reduced } => {
-                let with = RawDecode { dcp: camera_profile.as_ref().map(|(_, p)| p.as_ref()), outliers: *outliers };
+                let with = RawDecode {
+                    dcp: camera_profile.as_ref().and_then(|(_, p)| match p {
+                        super::ChosenCamera::Dcp(d) => Some(d.as_ref()),
+                        super::ChosenCamera::Look(_) => None,
+                    }),
+                    look: camera_profile.as_ref().and_then(|(_, p)| match p {
+                        super::ChosenCamera::Look(l) => Some(l.as_ref()),
+                        super::ChosenCamera::Dcp(_) => None,
+                    }),
+                    outliers: *outliers,
+                };
                 let made_with = camera_profile.as_ref().map(|(id, _)| id.clone());
                 let plain = || match (reduced, loader) {
                     (Some(l), _) => l(path, *max_edge, with).map(|(image, info, reduced)| DecodedSource {

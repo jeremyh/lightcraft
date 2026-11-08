@@ -550,6 +550,9 @@ impl Session {
         if let Some(p) = self.lut_profiles.iter().find(|p| p.id == id) {
             return Some((p.name.as_str(), p.group.as_str()));
         }
+        if let Some(look) = self.camera_looks.iter().find(|l| l.id == id) {
+            return Some((look.name.as_str(), crate::camera_profiles::LOOK_GROUP));
+        }
         self.dcp_profiles.iter().find(|p| p.id == id).map(|p| (p.name.as_str(), crate::cmd::dcp_profiles::DCP_GROUP))
     }
 
@@ -563,7 +566,8 @@ impl Session {
             .iter()
             .filter(|p| self.media.camera_profiles.contains_key(&p.id))
             .map(|p| (p.id.clone(), p.name.clone(), crate::cmd::dcp_profiles::DCP_GROUP.to_string()));
-        luts.chain(dcps).collect()
+        let looks = self.camera_looks.iter().map(|l| (l.id.clone(), l.name.clone(), crate::camera_profiles::LOOK_GROUP.to_string()));
+        luts.chain(dcps).chain(looks).collect()
     }
 
     /// Remember `id` as the most recently applied profile.

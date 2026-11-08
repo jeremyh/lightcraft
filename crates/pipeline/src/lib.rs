@@ -91,6 +91,9 @@ pub enum ColourBasis {
     CameraProfile { model: String, style: Option<String>, local: bool, fallback: bool },
     /// Fitted to the photo's own camera JPEG.
     CameraJpeg,
+    /// A picture style's look learned from the user's photos of the camera, chosen in the Profile menu: that style's
+    /// colour, with the tone fitted to the photo's own JPEG.
+    ChosenLook { model: String, style: String },
     /// Matrices from the camera model's measured spectral sensitivities: no colour fit was accepted.
     Spectral,
     /// No colour data for the camera: camera RGB taken as linear sRGB, so colours are muted and approximate.

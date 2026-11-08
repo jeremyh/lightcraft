@@ -87,6 +87,15 @@ pub struct MediaCache {
     pub camera_profiles: std::collections::HashMap<String, LoadedCameraProfile>,
 }
 
+/// The camera colour model a photo's profile choice develops its raw with: a DNG camera profile the user imported
+/// ([`crate::cmd::dcp_profiles`]), or a picture style's look learned from the user's photos
+/// ([`crate::camera_profiles::look_id`]).
+#[derive(Clone, Debug)]
+pub enum ChosenCamera {
+    Dcp(Arc<DcpProfile>),
+    Look(Arc<crate::camera_profiles::CameraProfile>),
+}
+
 /// An imported camera profile ready for the decoder, with a fingerprint of its file: decoded sources and cached renders
 /// made with it carry the fingerprint, so a profile deleted, or replaced by another under the same id, never has
 /// its old pictures stand in.

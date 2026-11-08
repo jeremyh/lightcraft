@@ -146,7 +146,8 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             }
         });
     }
-    if d.profile.id != "lc.color" {
+    // (a learned camera look is the camera's colour, not a look on top of it: it has no amount)
+    if d.profile.id != "lc.color" && !d.profile.id.starts_with(lightcraft_engine::camera_profiles::LOOK_PREFIX) {
         control(app, ui, &d, "profile.amount", true);
         ui.add_space(6.0);
     }
@@ -418,6 +419,9 @@ fn colour_source_text(source: &lightcraft_pipeline::ColourSource) -> String {
             crate::i18n::tr_format!("Camera colour: LightCraft's {model} profile", model = model)
         }
         ColourBasis::CameraJpeg => crate::i18n::tr("Camera colour: matched to the camera's own JPEG").to_owned(),
+        ColourBasis::ChosenLook { model, style } => {
+            crate::i18n::tr_format!("Camera colour: your {model} {style} look, learned from your photos", model = model, style = style)
+        }
         ColourBasis::Spectral => crate::i18n::tr("Camera colour: from the camera's measured sensor data").to_owned(),
         ColourBasis::Neutral => crate::i18n::tr("Camera colour: approximate (no colour data for this camera)").to_owned(),
     };
@@ -447,5 +451,7 @@ mod colour_source_tests {
         assert_eq!(line(styled, false), "Camera colour: learned from your NIKON Z f photos (KP400)");
         let built_in = ColourBasis::CameraProfile { model: "ILCE-7M4".into(), style: None, local: false, fallback: false };
         assert_eq!(line(built_in, false), "Camera colour: LightCraft's ILCE-7M4 profile");
+        let look = ColourBasis::ChosenLook { model: "X-T2".into(), style: "Provia/Standard".into() };
+        assert_eq!(line(look, false), "Camera colour: your X-T2 Provia/Standard look, learned from your photos");
     }
 }

@@ -15,7 +15,7 @@ pub fn load_bytes(bytes: &[u8], max_edge: usize) -> Result<(Rgb32f, SourceInfo),
 
 /// [`load_bytes`] developing a raw file with an imported camera profile (`dcp`) in place of its own colour model.
 pub fn load_bytes_with(bytes: &[u8], max_edge: usize, dcp: Option<&DcpProfile>) -> Result<(Rgb32f, SourceInfo), String> {
-    load_bytes_decoded(bytes, max_edge, RawDecode { dcp, outliers: false })
+    load_bytes_decoded(bytes, max_edge, RawDecode { dcp, look: None, outliers: false })
 }
 
 /// [`load_bytes`] decoding a raw file as `with` says.
@@ -82,6 +82,7 @@ fn load_bytes_now(
     with: RawDecode<'_>,
 ) -> Result<(Rgb32f, Option<Rgb32f>, SourceInfo, bool), String> {
     let dcp = with.dcp;
+    let chosen_look = with.look;
     if lightcraft_raw::probe(&bytes).is_some() {
         // a thumbnail (`allow_reduced`, never an export) of a DNG that keeps smaller copies of its raw image
         // (Lightroom's merges) develops the smallest that covers it; a denoised photo's twin needs the full mosaic
@@ -160,7 +161,7 @@ fn load_bytes_now(
         let ((xy, t, camera_look, colour_source), mattes) = rayon::join(
             || {
                 with_dng_lens_ops(&mut raw, dng_lens_ops.as_ref(), lens.as_ref(), list3, |raw, embedded| {
-                    crate::camera_preview::starting_colour_sourced(raw, &bytes, lens_geometry.as_ref(), embedded)
+                    crate::camera_preview::starting_colour_sourced(raw, &bytes, lens_geometry.as_ref(), embedded, chosen_look)
                 })
             },
             || dng_mattes(&bytes, &info),
