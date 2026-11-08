@@ -920,7 +920,8 @@ fn corpus_rw2_and_orf_pool_pairs_away_from_edges() {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus"))
         .join("raw");
-    for name in ["rw2-panasonic-gx80.rw2", "orf-olympus-em10iii.orf"] {
+    // (an uncompressed ORF: compressed ones are not decoded since #3916)
+    for name in ["rw2-panasonic-gx80.rw2", "orf-olympus-e-m5-mark-ii.orf"] {
         let Ok(bytes) = std::fs::read(dir.join(name)) else {
             lightcraft_testkit::skip!(Corpus, "{name} absent");
             continue;

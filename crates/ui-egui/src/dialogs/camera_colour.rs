@@ -154,7 +154,7 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
         let _ = app.run("cameraColour.cancel", json!({}));
     }
 
-    if !report.checks.is_empty() || !report.skipped.is_empty() {
+    if !report.checks.is_empty() || !report.skipped.is_empty() || report.unreadable > 0 {
         ui.add_space(8.0);
         panel(ui, t, "Result", |ui| {
             for check in &report.checks {
@@ -164,6 +164,12 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
                 if let Some(evidence) = evidence {
                     ui.label(dim(&evidence));
                 }
+            }
+            if report.unreadable > 0 {
+                ui.label(dim(&crate::i18n::tr_format!(
+                    "{n} photos couldn't be read (a raw format LightCraft can't decode yet)",
+                    n = report.unreadable
+                )));
             }
             for (group, reason) in &report.skipped {
                 row(ui, egui::RichText::new(group).color(t.text), dim(crate::i18n::tr("Not checked")));

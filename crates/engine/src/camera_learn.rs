@@ -279,6 +279,8 @@ pub struct Report {
     pub checks: Vec<GroupCheck>,
     /// Groups that couldn't be checked, and why.
     pub skipped: Vec<(String, String)>,
+    /// Photos learning couldn't read or decode (a raw variant LightCraft doesn't decode, a file gone or damaged).
+    pub unreadable: usize,
     /// Profile files written by the last learning, by name.
     pub written: Vec<String>,
     pub error: Option<String>,
@@ -575,10 +577,12 @@ fn learn_from(
     let total = candidates.len();
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
+    let unreadable = AtomicUsize::new(0);
     {
         let mut s = lock(shared);
         s.report.done = 0;
         s.report.of = total;
+        s.report.unreadable = 0;
     }
     guard.progress(0, total as u64);
     let pools: Vec<Pool> = std::thread::scope(|scope| {
@@ -591,10 +595,14 @@ fn learn_from(
                         if tag >= total || cancel.load(Ordering::Relaxed) {
                             break;
                         }
-                        if let Some(bytes) = read(tag) {
+                        // a file that can't contribute (or a decoder bug in it) is passed over; one that can't be read or
+                        // decoded is counted, so the dialog can say so
+                        let added = read(tag).map(|bytes| {
                             let _permit = crate::memory::work_gate().acquire(bytes.len().saturating_mul(6));
-                            // a file that can't contribute (or a decoder bug in it) is passed over
-                            let _ = crate::guard::catch("learning camera colour", || pool.add(&bytes, tag));
+                            crate::guard::catch("learning camera colour", || pool.add(&bytes, tag))
+                        });
+                        if !matches!(added, Some(Ok(Ok(_)))) {
+                            unreadable.fetch_add(1, Ordering::Relaxed);
                         }
                         crate::memory::release();
                         let n = done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -607,8 +615,13 @@ fn learn_from(
             .collect();
         handles.into_iter().filter_map(|h| h.join().ok()).collect()
     });
+    let unreadable = unreadable.into_inner();
+    lock(shared).report.unreadable = unreadable;
     if cancel.load(Ordering::Relaxed) {
         return Ok(());
+    }
+    if unreadable == total && total > 0 {
+        return Err("none of these photos could be read: LightCraft doesn't decode this camera's raw files yet".into());
     }
     let mut pool = Pool::new(true);
     for p in pools {
