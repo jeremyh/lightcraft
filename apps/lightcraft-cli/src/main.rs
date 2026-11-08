@@ -10,7 +10,7 @@
 //! lightcraft-cli denoise-serve [--model ID] [--models DIR] [--listen ADDR] [--token-env VAR] [--run-on auto|gpu|cpu]
 //! lightcraft-cli commands [--json]
 //! lightcraft-cli controls [--json]
-//! lightcraft-cli calibrate [--max N] [--out DIR] FOLDERS/FILES…
+//! lightcraft-cli calibrate [--max N] [--out DIR] [--by-model] [--check] FOLDERS/FILES…
 //! lightcraft-cli bench-cull FOLDER [--files K] [--n N] [--copy M] [--work DIR] [--json FILE]
 //! ```
 #![forbid(unsafe_code)]
@@ -106,12 +106,18 @@ USAGE:
         --max-connections N   concurrent clients (default 8)
   lightcraft-cli commands [--json]   list every command id with its parameters
   lightcraft-cli controls [--json]   list every develop control id with its range
-  lightcraft-cli calibrate [--max N] [--out DIR] FOLDERS/FILES…
-      Fit a colour profile per camera model from raw files and their embedded camera JPEGs
-      (Sony ARW, Nikon NEF, Fujifilm RAF, Canon CRW): up to N files spread over the folders (default 300; 0 = all), pooled per
-      model, written as <model>.json to DIR (default: the profiles folder LightCraft reads,
-      <config>/camera-profiles, or $LIGHTCRAFT_CAMERA_PROFILES). Raws of a profiled model then
-      take their colour from the profile and only their tone from their own JPEG.
+  lightcraft-cli calibrate [--max N] [--out DIR] [--by-model] [--check] FOLDERS/FILES…
+      Fit a colour profile per camera model and picture style (Fujifilm film simulation, Nikon
+      Picture Control) from raw files and their embedded camera JPEGs (Sony ARW, Nikon NEF,
+      Fujifilm RAF, Canon CRW): up to N files spread over the folders (default 300; 0 = all),
+      written as <model>@<style>.json, or <model>.json when the style is unknown, to DIR (default:
+      the profiles folder LightCraft reads, <config>/camera-profiles, or
+      $LIGHTCRAFT_CAMERA_PROFILES). Raws of a profiled model and style then take their colour from
+      the profile and only their tone from their own JPEG.
+        --by-model   one profile per camera model, whatever the style
+        --check      fit on most shooting days and compare with today's colour on the photos of
+                     every fifth day (mean CIEDE2000 to each camera JPEG); write only profiles
+                     that come closer on average, in the median and on most of those photos
   lightcraft-cli bench-cull FOLDER [--files K] [--n N] [--copy M] [--work DIR] [--json FILE]
       Time what culling a shoot costs on its own files: reading the folder (browse), the first
       screen of grid thumbnails, camera previews at loupe sizes and full size, a loupe render,
@@ -236,15 +242,47 @@ fn raw_files(path: &Path, out: &mut Vec<std::path::PathBuf>) {
     out.extend(walked.files);
 }
 
+/// Run `work` on each item on up to `workers` threads, in any order; returns the results in item order.
+fn in_parallel<T: Sync, R: Send>(items: &[T], workers: usize, work: impl Fn(usize, &T) -> R + Sync) -> Vec<R> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut results: Vec<(usize, R)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers.max(1))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(i) else { break };
+                        out.push((i, work(i, item)));
+                    }
+                    out
+                })
+            })
+            .collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).flatten().collect()
+    });
+    results.sort_by_key(|(i, _)| *i);
+    results.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Photos a profile is fitted on, at least.
+const CALIBRATE_MIN_FILES: usize = 5;
+/// `--check` holds out every this-many-th shooting day.
+const CHECK_EVERY_DAY: usize = 5;
+
 fn calibrate(args: &[String]) -> Result<(), String> {
+    use lightcraft_engine::camera_profiles::{Pool, save};
     let mut max = 300usize;
     let mut out: Option<std::path::PathBuf> = None;
+    let (mut by_style, mut check) = (true, false);
     let mut inputs = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--max" => max = take_value(args, &mut i, "--max")?.parse().map_err(|_| "--max needs a number".to_string())?,
             "--out" => out = Some(take_value(args, &mut i, "--out")?.into()),
+            "--by-model" => by_style = false,
+            "--check" => check = true,
             a if a.starts_with("--") => return Err(format!("unknown option `{a}`")),
             f => inputs.push(f.to_string()),
         }
@@ -267,59 +305,167 @@ fn calibrate(args: &[String]) -> Result<(), String> {
     eprintln!("calibrate: {} of {found} raw files", files.len());
     let dir = out.or_else(lightcraft_engine::camera_profiles::dir).ok_or("no profiles folder: pass --out DIR")?;
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 6);
-    let next = std::sync::atomic::AtomicUsize::new(0);
     let done = std::sync::atomic::AtomicUsize::new(0);
-    let pools: Vec<lightcraft_engine::camera_profiles::Pool> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..workers)
-            .map(|_| {
-                scope.spawn(|| {
-                    let mut pool = lightcraft_engine::camera_profiles::Pool::default();
-                    while let Some(path) = files.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
-                        let result = std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| pool.add(&bytes));
-                        let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        match result {
-                            Ok(Some(model)) => eprintln!("[{n}/{}] {} ({model})", files.len(), path.display()),
-                            Ok(None) => eprintln!("[{n}/{}] {}: skipped (no usable camera JPEG or colour)", files.len(), path.display()),
-                            Err(e) => eprintln!("[{n}/{}] {}: {e}", files.len(), path.display()),
-                        }
-                    }
-                    pool
-                })
-            })
-            .collect();
-        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+    let total = files.len();
+    let added = in_parallel(&files, workers, |tag, path| {
+        let mut pool = Pool::new(by_style);
+        let result = std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| pool.add(&bytes, tag));
+        let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        match &result {
+            Ok(Some(group)) => eprintln!("[{n}/{total}] {} ({group})", path.display()),
+            Ok(None) => eprintln!("[{n}/{total}] {}: skipped (no usable camera JPEG or colour)", path.display()),
+            Err(e) => eprintln!("[{n}/{total}] {}: {e}", path.display()),
+        }
+        pool
     });
-    let mut pool = lightcraft_engine::camera_profiles::Pool::default();
-    for p in pools {
+    let mut pool = Pool::new(by_style);
+    for p in added {
         pool.merge(p);
     }
     let mut written = 0;
-    for result in pool.fit(5) {
-        match result {
-            Ok(profile) => {
-                let path = lightcraft_engine::camera_profiles::save(&profile, &dir)?;
-                println!(
-                    "{}: {} photos, {} colour pairs, hue/saturation table {} → {}",
-                    profile.model,
-                    profile.files,
-                    profile.samples,
-                    profile.hue_sat.is_some(),
-                    path.display()
-                );
-                written += 1;
-            }
-            Err(e) => eprintln!("calibrate: {e}"),
+    let mut write = |profile: &lightcraft_engine::camera_profiles::CameraProfile| -> Result<(), String> {
+        let path = save(profile, &dir)?;
+        println!(
+            "{}{}{}: {} photos, {} colour pairs, hue/saturation table {} → {}",
+            profile.model,
+            profile.style.as_deref().map(|s| format!(" · {s}")).unwrap_or_default(),
+            if profile.fallback_only { " (fallback)" } else { "" },
+            profile.files,
+            profile.samples,
+            profile.hue_sat.is_some(),
+            path.display()
+        );
+        written += 1;
+        Ok(())
+    };
+    for (group, n) in pool.files() {
+        if n < CALIBRATE_MIN_FILES {
+            eprintln!("calibrate: {group}: only {n} usable photo(s), at least {CALIBRATE_MIN_FILES} needed");
         }
     }
-    for (model, n) in pool.files() {
-        if n < 5 {
-            eprintln!("calibrate: {model}: only {n} usable photo(s), at least 5 needed");
+    if !check {
+        for result in pool.fit(CALIBRATE_MIN_FILES) {
+            match result {
+                Ok(profile) => write(&profile)?,
+                Err(e) => eprintln!("calibrate: {e}"),
+            }
+        }
+    } else {
+        // each picture style, then each camera model as a whole: the any-style profile is the one a black-and-white
+        // photo (no colour style) and a photo of an unknown style use
+        check_groups(&pool, &files, workers, by_style, &mut write)?;
+        if by_style {
+            check_groups(&pool.into_by_model(), &files, workers, false, &mut write)?;
         }
     }
     if written == 0 {
         return Err("no profile written".into());
     }
     Ok(())
+}
+
+/// `--check` for every group of `pool` with enough photos and days, writing the profiles that pass: one that comes
+/// closer on held-out colour photos than their own fits is used for every photo of its group; one that only comes
+/// closer than the colour photos get when their JPEG can't teach it (a black-and-white JPEG, a rejected fit) is
+/// written as a fallback, used only for those. `skip_any_style`: leave out groups without a style (checked when
+/// grouping by model).
+fn check_groups(
+    pool: &lightcraft_engine::camera_profiles::Pool,
+    files: &[std::path::PathBuf],
+    workers: usize,
+    skip_any_style: bool,
+    write: &mut dyn FnMut(&lightcraft_engine::camera_profiles::CameraProfile) -> Result<(), String>,
+) -> Result<(), String> {
+    use lightcraft_engine::camera_profiles::{PhotoCheck, check_photo};
+    for (group, n) in pool.files() {
+        if skip_any_style && group.style.is_none() {
+            continue;
+        }
+        let days = pool.days(&group);
+        let split = match pool.split_by_day(&group, CHECK_EVERY_DAY, CALIBRATE_MIN_FILES) {
+            Some(Ok(split)) => split,
+            Some(Err(e)) => {
+                println!("{group}: {n} photos on {days} days: {e}");
+                continue;
+            }
+            None => {
+                if n >= CALIBRATE_MIN_FILES {
+                    println!(
+                        "{group}: {n} photos on {days} days: too few days to check (needs {} or more)",
+                        CHECK_EVERY_DAY / 2 + CHECK_EVERY_DAY + 1
+                    );
+                }
+                continue;
+            }
+        };
+        let test: Vec<&std::path::PathBuf> = split.test.iter().filter_map(|&tag| files.get(tag)).collect();
+        let checks: Vec<PhotoCheck> = in_parallel(&test, workers, |_, path| {
+            std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| check_photo(&bytes, &split.profile)).ok().flatten()
+        })
+        .into_iter()
+        .flatten()
+        .collect();
+        let colour = check_verdict(&checks.iter().map(|c| c.colour).collect::<Vec<_>>());
+        let black_and_white = check_verdict(&checks.iter().map(|c| c.black_and_white).collect::<Vec<_>>());
+        let decision = if colour.better {
+            "used for every photo of the group"
+        } else if black_and_white.better {
+            "used where a photo can't fit its own colour"
+        } else {
+            "not written"
+        };
+        println!(
+            "{group}: fitted on {} photos from {} days, checked on {} photos from {} other days: {decision}\n  as colour photos:          {}\n  as black-and-white photos: {}",
+            split.profile.files,
+            split.train_days,
+            checks.len(),
+            split.test_days,
+            colour.summary,
+            black_and_white.summary
+        );
+        if !(colour.better || black_and_white.better) {
+            continue;
+        }
+        match pool.fit_group(&group) {
+            Some(Ok(profile)) => write(&if colour.better { profile } else { profile.as_fallback() })?,
+            Some(Err(e)) => eprintln!("calibrate: {e}"),
+            None => {}
+        }
+    }
+    Ok(())
+}
+
+struct Verdict {
+    better: bool,
+    summary: String,
+}
+
+/// Whether a profile beat today's colour on held-out photos (`(today, profile)` mean CIEDE2000 each): closer on
+/// average and in the median, and closer on more than half of them.
+fn check_verdict(scores: &[(f64, f64)]) -> Verdict {
+    if scores.is_empty() {
+        return Verdict { better: false, summary: "no held-out photo could be measured".into() };
+    }
+    let n = scores.len() as f64;
+    let mean = |f: fn(&(f64, f64)) -> f64| scores.iter().map(f).sum::<f64>() / n;
+    let median = |f: fn(&(f64, f64)) -> f64| {
+        let mut v: Vec<f64> = scores.iter().map(f).collect();
+        v.sort_by(f64::total_cmp);
+        v.get(v.len() / 2).copied().unwrap_or(f64::NAN)
+    };
+    let (before, after) = (mean(|s| s.0), mean(|s| s.1));
+    let (median_before, median_after) = (median(|s| s.0), median(|s| s.1));
+    let closer = scores.iter().filter(|s| s.1 < s.0).count();
+    let worst = scores.iter().map(|s| s.1 - s.0).fold(f64::NEG_INFINITY, f64::max);
+    let better = after < before && median_after < median_before && closer * 2 > scores.len();
+    Verdict {
+        better,
+        summary: format!(
+            "mean ΔE00 {before:.2} → {after:.2}, median {median_before:.2} → {median_after:.2}, closer on {closer} of {}, worst {worst:+.2}: {}",
+            scores.len(),
+            if better { "better" } else { "not better" }
+        ),
+    }
 }
 
 fn mcp(args: &[String]) -> Result<(), String> {

@@ -259,6 +259,7 @@ pub(super) struct Attempt {
 /// valid when the camera JPEG's geometry differs slightly from the raw's (issue #232). The whole
 /// search runs with one tone fit before the next is tried, so the conditional-median fallback
 /// accepts exactly what the previous releases accepted.
+#[cfg(test)]
 pub(super) fn search_ordered(
     sensor: &Rgb32f,
     reference: &Rgb32f,
@@ -266,7 +267,24 @@ pub(super) fn search_ordered(
     order: &[ToneFit],
     bright: &HighlightCheck,
 ) -> Option<(CameraLook, Attempt)> {
-    let profiles: &[bool] = if colour.is_some() { &[true, false] } else { &[false] };
+    search_ordered_with(sensor, reference, colour, order, bright, false)
+}
+
+/// [`search_ordered`], trying the photo's own colour before the camera profile's when `profile_last` (a profile used
+/// only where a photo can't fit its own colour, [`crate::camera_profiles::CameraProfile::fallback_only`]).
+pub(super) fn search_ordered_with(
+    sensor: &Rgb32f,
+    reference: &Rgb32f,
+    colour: Option<(Mat3, Option<HsvTable>)>,
+    order: &[ToneFit],
+    bright: &HighlightCheck,
+    profile_last: bool,
+) -> Option<(CameraLook, Attempt)> {
+    let profiles: &[bool] = match (colour.is_some(), profile_last) {
+        (true, false) => &[true, false],
+        (true, true) => &[false, true],
+        (false, _) => &[false],
+    };
     order.iter().find_map(|&tone| {
         profiles.iter().find_map(|&profile| {
             [false, true].into_iter().find_map(|away_from_edges| {

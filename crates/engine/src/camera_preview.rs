@@ -16,6 +16,7 @@ use lightcraft_raw::{
     profile::{HsvTable, ProfileLook, ToneCurve},
 };
 
+mod check;
 mod colour;
 mod hue_sat;
 mod look_fit;
@@ -24,6 +25,7 @@ mod pairs;
 mod proxy;
 mod tone;
 
+pub(crate) use check::{delta_e_as_black_and_white, delta_e_to_camera_jpeg};
 #[cfg(test)]
 pub(crate) use colour::{PROFILE_PROXY, dng_colour, dng_tone_eligible};
 #[cfg(test)]
@@ -36,8 +38,8 @@ use hue_sat::{MIN_LUMINANCE_KEPT, NO_LUMINANCE_KEPT, fit_hue_sat, hue_saturation
 pub(crate) use look_fit::fit_preview;
 #[cfg(test)]
 use look_fit::{
-    FIT_PREVIEW_MAX_PIXELS, SENSOR_CLIP, at_most, clips_more, correct_vignetting, fit_look, fit_look_with, sony_dro_off_tone, with_dro_off_tone,
-    without_clipped,
+    FIT_PREVIEW_MAX_PIXELS, SENSOR_CLIP, at_most, clips_more, correct_vignetting, fit_look, fit_look_ordered, fit_look_with, sony_dro_off_tone,
+    with_dro_off_tone, without_clipped,
 };
 #[cfg(test)]
 use mono::{fit_dark_tone, fit_tone_only, monochrome, monochrome_look, to_prophoto};

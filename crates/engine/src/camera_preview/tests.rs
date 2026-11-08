@@ -523,6 +523,48 @@ fn rejected_profile_preserves_a_usable_per_photo_fit() {
     assert_eq!(look.tone, per_photo.tone);
 }
 
+/// A camera profile used only where a photo can't fit its own colour (a learned fallback profile) leaves a photo whose
+/// own fit is accepted alone, and still gives its colour to a photo that can't learn one.
+#[test]
+fn a_fallback_profile_gives_way_to_the_photos_own_fit() {
+    let camera = Mat3([[1.8, -0.4, -0.1], [-0.2, 1.5, -0.1], [-0.05, -0.3, 1.7]]);
+    // close enough to the camera that the gates accept it as the colour model
+    let profile = Mat3([[1.78, -0.39, -0.1], [-0.21, 1.52, -0.1], [-0.05, -0.29, 1.68]]);
+    let mut sensor = Rgb32f::new(64, 64);
+    let mut reference = sensor.clone();
+    let mut seed = 0x2545_f491_u32;
+    for (src, dst) in sensor.data.iter_mut().zip(&mut reference.data) {
+        *src = std::array::from_fn(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            0.05 + (seed % 1000) as f32 * 0.0003
+        });
+        let p = camera.apply_f32(*src);
+        let y = luminance_2020(p);
+        *dst = p.map(|v| (v * (1.0 - (-2.5 * y).exp()) / y).clamp(0.0, 0.999));
+    }
+    let clipped = vec![false; sensor.data.len()];
+    let own = fit_look(&sensor, &reference, &clipped, None).unwrap();
+    let first = fit_look_ordered(&sensor, &reference, &clipped, Some((profile, None)), false, false).unwrap();
+    assert_eq!(first.matrix, profile, "an override profile's colour comes first");
+    let last = fit_look_ordered(&sensor, &reference, &clipped, Some((profile, None)), false, true).unwrap();
+    assert_eq!(last.matrix, own.matrix, "a fallback profile leaves the photo's own accepted fit alone");
+
+    // a dull scene: too little colour to learn a matrix, so the fallback profile's colour is used
+    let mut dull = Rgb32f::new(64, 48);
+    let mut dull_reference = dull.clone();
+    for (i, (src, dst)) in dull.data.iter_mut().zip(&mut dull_reference.data).enumerate() {
+        *src = [0.02 + (i % 997) as f32 * 0.00045; 3];
+        let p = profile.apply_f32(*src);
+        let y = luminance_2020(p);
+        *dst = p.map(|v| v * (1.0 - (-2.5 * y).exp()) / y);
+    }
+    let clipped = vec![false; dull.data.len()];
+    let look = fit_look_ordered(&dull, &dull_reference, &clipped, Some((profile, None)), false, true).unwrap();
+    assert_eq!(look.matrix, profile);
+}
+
 #[test]
 fn hue_sat_passes_black_and_non_finite_pixels_through() {
     let table = HsvTable { hue_divisions: 4, sat_divisions: 2, val_divisions: 1, data: vec![[10.0, 1.5, 1.0]; 8], srgb_value: false };

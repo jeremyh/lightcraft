@@ -1,18 +1,36 @@
 use super::colour::{PROXY, file_local_look};
 use super::mono::{fit_tone_only_with, monochrome};
-use super::pairs::{Attempt, TONE_FITS, fit_attempt, fit_partial, search_ordered};
+use super::pairs::{Attempt, TONE_FITS, fit_attempt, fit_partial, search_ordered_with};
 use super::proxy::{CLIP_TOLERANCE, LensGeometry, MIN_PREVIEW_FRACTION, proxies, structure_agrees};
 use super::tone::{HighlightCheck, highlights};
 use super::{CameraLook, CameraTone, CameraTransform, HsvTable, Mat3, RawImage, Rgb32f, ToneMap, luminance_2020};
 
 /// The look fitted to the file's camera JPEG, and whether that JPEG is black and white ([`monochrome`]).
 /// `embedded`: the file's embedded lens correction, whose vignetting the render applies ([`look_proxies`]).
+/// The camera profile is the one for the photo's model and the picture style it was shot with
+/// ([`crate::camera_profiles::get_styled`]).
 pub(crate) fn fit_preview(
     raw: &RawImage,
     bytes: &[u8],
     transform: &CameraTransform,
     lens: Option<&LensGeometry>,
     embedded: Option<&lightcraft_develop::EmbeddedLens>,
+) -> (Option<CameraLook>, bool) {
+    let profile = raw.metadata.model.as_deref().and_then(|model| {
+        let style = lightcraft_meta::picture_style::read(bytes);
+        crate::camera_profiles::get_styled(model, style.as_ref().and_then(crate::camera_profiles::style_key).as_deref())
+    });
+    fit_preview_with(raw, bytes, transform, lens, embedded, profile.as_deref())
+}
+
+/// [`fit_preview`] with the camera profile given (`None`: the photo's own colour alone).
+pub(crate) fn fit_preview_with(
+    raw: &RawImage,
+    bytes: &[u8],
+    transform: &CameraTransform,
+    lens: Option<&LensGeometry>,
+    embedded: Option<&lightcraft_develop::EmbeddedLens>,
+    profile: Option<&crate::camera_profiles::CameraProfile>,
 ) -> (Option<CameraLook>, bool) {
     if !transform.matrix_is_fallback || !file_local_look(raw.format) {
         return (None, false);
@@ -21,12 +39,12 @@ pub(crate) fn fit_preview(
     let black_and_white = monochrome(&reference);
     // A camera profile pooled from many photos knows colours this photo shows too little of;
     // try its colour first and fit tone/chroma per photo (picture styles vary).
-    let profile = raw.metadata.model.as_deref().and_then(crate::camera_profiles::get);
     let colour = profile.as_ref().and_then(|p| Some((p.matrix().mul(&transform.matrix.inverse()?), p.hue_sat.clone())));
     // Sony's Dynamic Range Optimizer (on by default) brightens the camera JPEG's darker regions,
     // not the raw: keep the colour fitted to the JPEG, take the tone curve without DRO.
     let dro = lightcraft_raw::embedded_preview_dynamic_range_optimized(bytes) == Some(true);
-    let look = match fit_look_with(&sensor, &reference, &clipped, colour.clone(), dro) {
+    let profile_last = profile.is_some_and(|p| p.fallback_only);
+    let look = match fit_look_ordered(&sensor, &reference, &clipped, colour.clone(), dro, profile_last) {
         Some(look) => look,
         // A black-and-white JPEG has no colour to fit: the profile's colour and the JPEG's tone curve
         // (`monochrome_look` does it without a profile).
@@ -80,6 +98,7 @@ pub(super) fn fit_look(sensor: &Rgb32f, reference: &Rgb32f, clipped: &[bool], co
 /// replace a look fitted away from edges). A photo that had no look gets one when the search
 /// without the clipped pixels finds it, and otherwise the [`fit_partial`] look when that is clearly
 /// closer to the camera JPEG than the neutral fallback.
+#[cfg(test)]
 pub(super) fn fit_look_with(
     sensor: &Rgb32f,
     reference: &Rgb32f,
@@ -87,13 +106,25 @@ pub(super) fn fit_look_with(
     colour: Option<(Mat3, Option<HsvTable>)>,
     dro: bool,
 ) -> Option<CameraLook> {
+    fit_look_ordered(sensor, reference, clipped, colour, dro, false)
+}
+
+/// [`fit_look_with`], trying the photo's own colour before `colour` when `profile_last` ([`search_ordered_with`]).
+pub(super) fn fit_look_ordered(
+    sensor: &Rgb32f,
+    reference: &Rgb32f,
+    clipped: &[bool],
+    colour: Option<(Mat3, Option<HsvTable>)>,
+    dro: bool,
+    profile_last: bool,
+) -> Option<CameraLook> {
     let unclipped = without_clipped(sensor, clipped);
     // from the proxies as they are: the retries' filters (clipped pixels, edges) don't remove them
     let bright = HighlightCheck { pairs: highlights(sensor, reference), dro, grey: false };
-    let Some((look, attempt)) = search_ordered(sensor, reference, colour.clone(), TONE_FITS, &bright) else {
+    let Some((look, attempt)) = search_ordered_with(sensor, reference, colour.clone(), TONE_FITS, &bright, profile_last) else {
         return unclipped
             .as_ref()
-            .and_then(|u| search_ordered(u, reference, colour, TONE_FITS, &bright))
+            .and_then(|u| search_ordered_with(u, reference, colour, TONE_FITS, &bright, profile_last))
             .map(|(look, _)| look)
             .or_else(|| fit_partial(unclipped.as_ref().unwrap_or(sensor), reference, &bright));
     };

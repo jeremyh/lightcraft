@@ -6,12 +6,14 @@
 //! - Transfer functions (sRGB, gamma, PQ, HLG) in [`transfer`].
 //! - Perceptual spaces: OkLab / OkLCh, HSL/HSV in [`perceptual`].
 //! - Tone-curve splines in [`spline`].
+//! - CIELAB and the CIEDE2000 colour difference in [`difference`].
 //!
 //! The pipeline's working space is **linear Rec.2020, D65** ([`WORKING`]).
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod cct;
+pub mod difference;
 pub mod perceptual;
 pub mod spline;
 pub mod transfer;
