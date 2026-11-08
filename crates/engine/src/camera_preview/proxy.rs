@@ -1,7 +1,7 @@
 use super::colour::{PROFILE_PROXY, PROXY, file_local_look};
 use super::hue_sat::fit_hue_sat;
 use super::look_fit::{FIT_PREVIEW_MAX_PIXELS, SENSOR_CLIP, clip_mask, correct_vignetting, without_clipped};
-use super::pairs::{collect_pairs, fit_matrix};
+use super::pairs::{EDGE_CONTRAST, collect_pairs, fit_matrix};
 use super::{CameraTransform, Filter, HsvTable, Mat3, RawFormat, RawImage, Rgb32f, fit, luminance_2020, resize};
 
 /// The embedded preview's long edge must be at least this share of the raw's (and 384 px): a DNG whose preview is a
@@ -318,6 +318,24 @@ fn align_cr3_framing(sensor: Rgb32f, clipped: Rgb32f, reference: &Rgb32f) -> (Rg
 /// baseline exposure) → its camera JPEG (linear Rec.2020). `None` for formats with their own
 /// colour matrices, other files or unusable previews.
 pub(crate) fn profile_pairs(raw: &RawImage, bytes: &[u8], lens: Option<&LensGeometry>) -> Option<Vec<([f64; 3], [f64; 3])>> {
+    profile_pairs_with(raw, bytes, lens, pooled_edge_limit(raw.format))
+}
+
+/// The edge limit of the pairs a raw of `format` pools ([`profile_pairs`]): Panasonic and Olympus camera JPEGs are
+/// often corrected for distortion the raw doesn't carry as a warp, so near edges their pixels don't line up with the
+/// sensor's; only pairs away from edges are pooled (where a slight offset changes little), as the per-photo fit's
+/// retry does (issue #232).
+pub(crate) fn pooled_edge_limit(format: RawFormat) -> Option<f32> {
+    matches!(format, RawFormat::Rw2 | RawFormat::Orf).then_some(EDGE_CONTRAST)
+}
+
+/// [`profile_pairs`] with the edge limit given (`None`: every pixel).
+pub(crate) fn profile_pairs_with(
+    raw: &RawImage,
+    bytes: &[u8],
+    lens: Option<&LensGeometry>,
+    edge_limit: Option<f32>,
+) -> Option<Vec<([f64; 3], [f64; 3])>> {
     if !file_local_look(raw.format) || lightcraft_raw::color::has_matrix(&raw.color) {
         return None;
     }
@@ -326,7 +344,7 @@ pub(crate) fn profile_pairs(raw: &RawImage, bytes: &[u8], lens: Option<&LensGeom
     let to_camera = transform.matrix.inverse()?;
     // clipped sensor pixels don't record the scene's colour (see `fit_look`)
     let sensor = without_clipped(&sensor, &clipped).unwrap_or(sensor);
-    let (pairs, _) = collect_pairs(&sensor, &reference, 0.05, None, false)?;
+    let (pairs, _) = collect_pairs(&sensor, &reference, 0.05, edge_limit, false)?;
     Some(pairs.into_iter().map(|(x, y)| (to_camera.apply(x), y)).collect())
 }
 

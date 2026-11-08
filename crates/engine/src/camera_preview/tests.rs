@@ -907,6 +907,33 @@ fn a_camera_outside_the_table_keeps_the_fallback() {
     assert!(starting_colour(&mut raw, &[], None, None).1.matrix_is_fallback);
 }
 
+/// Panasonic and Olympus raws pool only pairs away from edges: their camera JPEGs are often corrected for distortion
+/// the raw doesn't carry (the GX80's kit zoom), and pairs near edges would teach a pooled profile misaligned colours.
+#[test]
+fn corpus_rw2_and_orf_pool_pairs_away_from_edges() {
+    assert_eq!(pooled_edge_limit(RawFormat::Rw2), pooled_edge_limit(RawFormat::Orf));
+    assert!(pooled_edge_limit(RawFormat::Rw2).is_some());
+    assert!(
+        pooled_edge_limit(RawFormat::Raf).is_none() && pooled_edge_limit(RawFormat::Nef).is_none() && pooled_edge_limit(RawFormat::Arw).is_none()
+    );
+    let dir = std::env::var_os("LIGHTCRAFT_CORPUS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus"))
+        .join("raw");
+    for name in ["rw2-panasonic-gx80.rw2", "orf-olympus-em10iii.orf"] {
+        let Ok(bytes) = std::fs::read(dir.join(name)) else {
+            lightcraft_testkit::skip!(Corpus, "{name} absent");
+            continue;
+        };
+        let mut raw = lightcraft_raw::decode(&bytes).unwrap();
+        let lens = lens_geometry(&raw.opcodes.list3);
+        raw.opcodes.list3.retain(|op| !op.is_lens_correction());
+        let pooled = profile_pairs(&raw, &bytes, lens.as_ref()).unwrap_or_else(|| panic!("{name}: no pairs"));
+        let every = profile_pairs_with(&raw, &bytes, lens.as_ref(), None).unwrap();
+        assert!(pooled.len() >= 256 && pooled.len() < every.len(), "{name}: {} pooled of {}", pooled.len(), every.len());
+    }
+}
+
 /// The colour precedence on public raws (each skipped without its corpus file): a photo whose JPEG fit is
 /// accepted keeps it and its colour data; one whose fit fails takes its spectral matrices when its model has
 /// them; a DNG keeps its own matrices. White balance stays relative to the as-shot look for every raw without

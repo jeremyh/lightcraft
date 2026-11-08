@@ -56,6 +56,8 @@ use proxy::{
 };
 pub(crate) use proxy::{fit_profile, lens_geometry, profile_pairs};
 #[cfg(test)]
+use proxy::{pooled_edge_limit, profile_pairs_with};
+#[cfg(test)]
 use tone::{HighlightCheck, ToneFit, fit_tone, fit_tone_conditional, highlights};
 
 /// The version of the camera-look fit: how a raw's colour matrix, hue/saturation table and tone

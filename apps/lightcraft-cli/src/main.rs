@@ -110,7 +110,8 @@ USAGE:
   lightcraft-cli calibrate [--max N] [--out DIR] [--by-model] [--check] FOLDERS/FILES…
       Fit a colour profile per camera model and picture style (Fujifilm film simulation, Nikon
       Picture Control) from raw files and their embedded camera JPEGs (Sony ARW, Nikon NEF,
-      Fujifilm RAF, Canon CRW): up to N files spread over the folders (default 300; 0 = all),
+      Fujifilm RAF, Canon CRW, Panasonic RW2, Olympus ORF): up to N files spread over the folders
+      (default 300; 0 = all),
       written as <model>@<style>.json, or <model>.json when the style is unknown, to DIR (default:
       the profiles folder LightCraft reads, <config>/camera-profiles, or
       $LIGHTCRAFT_CAMERA_PROFILES). Raws of a profiled model and style then take their colour from
@@ -224,7 +225,7 @@ fn main() -> ExitCode {
 /// folder of links pointing back at their parents made the old recursive walk re-read the same
 /// folders exponentially often before its depth limit cut it off (CWE-400).
 /// Raw formats `calibrate` pools.
-const CALIBRATE_FORMATS: &[&str] = &["arw", "nef", "nrw", "raf", "crw"];
+const CALIBRATE_FORMATS: &[&str] = &["arw", "nef", "nrw", "raf", "crw", "rw2", "rwl", "orf"];
 /// Raw formats `colour-survey` looks at.
 const SURVEY_FORMATS: &[&str] = &["arw", "nef", "nrw", "raf", "crw", "cr2", "cr3", "rw2", "rwl", "orf", "pef", "srw", "erf", "mrw", "dng"];
 
