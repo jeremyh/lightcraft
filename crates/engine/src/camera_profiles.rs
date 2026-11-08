@@ -421,6 +421,46 @@ pub fn check_photo(bytes: &[u8], candidate: &CameraProfile) -> Result<Option<Pho
     Ok(colour.zip(black_and_white).map(|(colour, black_and_white)| PhotoCheck { colour, black_and_white }))
 }
 
+/// How a raw's colour starts when it opens ([`survey_photo`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ColourStart {
+    /// The file's own colour matrices (DNG and the like).
+    OwnMatrices,
+    /// Colour fitted to its camera JPEG, accepted (with the installed camera profile's colour, if any).
+    Fitted,
+    /// A black-and-white camera JPEG: tone only, on a profile's, the spectral or the neutral colour.
+    BlackAndWhite,
+    /// A colour camera JPEG whose fit the acceptance gates reject: the spectral or the neutral colour.
+    Rejected,
+    /// No camera JPEG large and aligned enough to fit to.
+    NoCameraJpeg,
+    /// A format whose colour isn't fitted to its JPEG.
+    NotFitted,
+}
+
+/// One raw's camera, picture style and how its colour starts, and whether its model has spectral matrices (the
+/// colour [`ColourStart::BlackAndWhite`], [`ColourStart::Rejected`] and [`ColourStart::NoCameraJpeg`] photos get
+/// without a camera profile; else the neutral fallback).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Survey {
+    pub model: String,
+    pub style: Option<String>,
+    pub start: ColourStart,
+    pub spectral: bool,
+}
+
+/// How one raw's colour starts with the installed profiles ([`Survey`]).
+pub fn survey_photo(bytes: &[u8]) -> Result<Survey, String> {
+    let mut raw = lightcraft_raw::decode(bytes).map_err(|e| e.to_string())?;
+    let lens = crate::camera_preview::lens_geometry(&raw.opcodes.list3);
+    raw.opcodes.list3.retain(|op| !op.is_lens_correction());
+    let model = raw.metadata.model.as_deref().map(str::trim).unwrap_or_default().to_owned();
+    let spectral = lightcraft_raw::spectral::find(raw.metadata.make.as_deref(), &model).is_some();
+    let style = lightcraft_meta::picture_style::read(bytes).map(|s| s.name);
+    let start = crate::camera_preview::colour_start(&raw, bytes, lens.as_ref());
+    Ok(Survey { model, style, start, spectral })
+}
+
 fn fit_photos<'a>(group: &Group, photos: impl Iterator<Item = &'a Photo>) -> Result<CameraProfile, String> {
     let mut files = 0;
     let mut pairs = Vec::new();

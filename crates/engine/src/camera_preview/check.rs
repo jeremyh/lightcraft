@@ -84,3 +84,23 @@ fn score(look: Option<&CameraLook>, sensor: &Rgb32f, reference: &Rgb32f, clipped
     }
     (count > 0).then(|| sum / count as f64)
 }
+
+/// How a raw's colour starts, with the camera profiles installed ([`crate::camera_profiles::ColourStart`]).
+pub(crate) fn colour_start(raw: &RawImage, bytes: &[u8], lens: Option<&LensGeometry>) -> crate::camera_profiles::ColourStart {
+    use crate::camera_profiles::ColourStart;
+    let transform = lightcraft_raw::color::camera_transform(raw, lightcraft_raw::color::as_shot_white_xy(raw));
+    if !transform.matrix_is_fallback {
+        return ColourStart::OwnMatrices;
+    }
+    if !super::file_local_look(raw.format) {
+        return ColourStart::NotFitted;
+    }
+    if look_proxies(raw, bytes, &transform, lens, None).is_none() {
+        return ColourStart::NoCameraJpeg;
+    }
+    match super::look_fit::fit_preview(raw, bytes, &transform, lens, None) {
+        (Some(_), _) => ColourStart::Fitted,
+        (None, true) => ColourStart::BlackAndWhite,
+        (None, false) => ColourStart::Rejected,
+    }
+}

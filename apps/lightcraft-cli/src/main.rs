@@ -11,6 +11,7 @@
 //! lightcraft-cli commands [--json]
 //! lightcraft-cli controls [--json]
 //! lightcraft-cli calibrate [--max N] [--out DIR] [--by-model] [--check] FOLDERS/FILES…
+//! lightcraft-cli colour-survey [--max N] FOLDERS/FILES…
 //! lightcraft-cli bench-cull FOLDER [--files K] [--n N] [--copy M] [--work DIR] [--json FILE]
 //! ```
 #![forbid(unsafe_code)]
@@ -118,6 +119,11 @@ USAGE:
         --check      fit on most shooting days and compare with today's colour on the photos of
                      every fifth day (mean CIEDE2000 to each camera JPEG); write only profiles
                      that come closer on average, in the median and on most of those photos
+  lightcraft-cli colour-survey [--max N] FOLDERS/FILES…
+      How the colour of up to N raws spread over the folders (default 1000; 0 = all) starts when they
+      open, per camera model: fitted to the camera JPEG, a black-and-white camera JPEG (tone only),
+      a fit the checks reject, no usable camera JPEG, the file's own colour matrices, or not fitted;
+      and whether the model has spectral matrices (else such photos get the neutral fallback).
   lightcraft-cli bench-cull FOLDER [--files K] [--n N] [--copy M] [--work DIR] [--json FILE]
       Time what culling a shoot costs on its own files: reading the folder (browse), the first
       screen of grid thumbnails, camera previews at loupe sizes and full size, a loupe render,
@@ -190,6 +196,7 @@ fn main() -> ExitCode {
         Some("controls") => controls(&args[1..]),
         Some("denoise-serve") => denoise_serve(&args[1..]),
         Some("calibrate") => calibrate(&args[1..]),
+        Some("colour-survey") => colour_survey(&args[1..]),
         Some("bench-cull") => bench_cull::run(&args[1..]),
         Some("--version" | "-V" | "version") => {
             println!("lightcraft-cli {}", env!("CARGO_PKG_VERSION"));
@@ -210,16 +217,19 @@ fn main() -> ExitCode {
     }
 }
 
-/// Raw files below `path` (or `path` itself), skipping hidden and NAS metadata folders.
+/// Raw files of `formats` (extensions) below `path` (or `path` itself), skipping hidden and NAS metadata folders.
 ///
 /// Folders go through the engine's bounded walk ([`lightcraft_engine::walk::files_in`]): it enters
 /// a folder reached through a link once at most and stops at a depth and an entry budget. A
 /// folder of links pointing back at their parents made the old recursive walk re-read the same
 /// folders exponentially often before its depth limit cut it off (CWE-400).
-fn raw_files(path: &Path, out: &mut Vec<std::path::PathBuf>) {
-    let is_raw = |p: &Path| {
-        p.extension().and_then(|e| e.to_str()).is_some_and(|e| ["arw", "nef", "nrw", "raf", "crw"].iter().any(|x| e.eq_ignore_ascii_case(x)))
-    };
+/// Raw formats `calibrate` pools.
+const CALIBRATE_FORMATS: &[&str] = &["arw", "nef", "nrw", "raf", "crw"];
+/// Raw formats `colour-survey` looks at.
+const SURVEY_FORMATS: &[&str] = &["arw", "nef", "nrw", "raf", "crw", "cr2", "cr3", "rw2", "rwl", "orf", "pef", "srw", "erf", "mrw", "dng"];
+
+fn raw_files(path: &Path, formats: &[&str], out: &mut Vec<std::path::PathBuf>) {
+    let is_raw = |p: &Path| p.extension().and_then(|e| e.to_str()).is_some_and(|e| formats.iter().any(|x| e.eq_ignore_ascii_case(x)));
     if path.is_file() {
         if is_raw(path) {
             out.push(path.to_path_buf());
@@ -240,6 +250,80 @@ fn raw_files(path: &Path, out: &mut Vec<std::path::PathBuf>) {
         eprintln!("calibrate: {} has more folders or entries than a walk looks at; the rest is left out", path.display());
     }
     out.extend(walked.files);
+}
+
+/// `colour-survey`: how the colour of up to `--max` raws (spread over the folders) starts, per camera model.
+fn colour_survey(args: &[String]) -> Result<(), String> {
+    use lightcraft_engine::camera_profiles::{ColourStart, survey_photo};
+    let mut max = 1000usize;
+    let mut inputs = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--max" => max = take_value(args, &mut i, "--max")?.parse().map_err(|_| "--max needs a number".to_string())?,
+            a if a.starts_with("--") => return Err(format!("unknown option `{a}`")),
+            f => inputs.push(f.to_string()),
+        }
+        i += 1;
+    }
+    if inputs.is_empty() {
+        return Err("colour-survey needs folders or raw files".into());
+    }
+    let mut files = Vec::new();
+    for input in &inputs {
+        raw_files(Path::new(input), SURVEY_FORMATS, &mut files);
+    }
+    files.sort();
+    files.dedup();
+    let found = files.len();
+    if max > 0 && files.len() > max {
+        files = (0..max).filter_map(|k| files.get(k * found / max).cloned()).collect();
+    }
+    eprintln!("colour-survey: {} of {found} raw files", files.len());
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 6);
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let surveys = in_parallel(&files, workers, |_, path| {
+        let result = std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| survey_photo(&bytes));
+        let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        match &result {
+            Ok(s) => eprintln!("[{n}/{}] {} ({}: {:?})", files.len(), path.display(), s.model, s.start),
+            Err(e) => eprintln!("[{n}/{}] {}: {e}", files.len(), path.display()),
+        }
+        result.ok()
+    });
+    let kinds = [
+        (ColourStart::Fitted, "fitted"),
+        (ColourStart::BlackAndWhite, "b&w"),
+        (ColourStart::Rejected, "rejected"),
+        (ColourStart::NoCameraJpeg, "no jpeg"),
+        (ColourStart::OwnMatrices, "own matrices"),
+        (ColourStart::NotFitted, "not fitted"),
+    ];
+    let mut models: std::collections::BTreeMap<String, (bool, Vec<ColourStart>)> = std::collections::BTreeMap::new();
+    for s in surveys.into_iter().flatten() {
+        let entry = models.entry(s.model).or_insert((s.spectral, Vec::new()));
+        entry.1.push(s.start);
+    }
+    let header: Vec<&str> = kinds.iter().map(|(_, name)| *name).collect();
+    println!("{:<24} {:>6}  {}  spectral", "camera", "raws", header.iter().map(|h| format!("{h:>14}")).collect::<String>());
+    let mut totals = vec![0usize; kinds.len()];
+    let mut all = 0;
+    for (model, (spectral, starts)) in &models {
+        let counts: Vec<usize> = kinds.iter().map(|(k, _)| starts.iter().filter(|s| *s == k).count()).collect();
+        for (t, c) in totals.iter_mut().zip(&counts) {
+            *t += c;
+        }
+        all += starts.len();
+        println!(
+            "{:<24} {:>6}  {}  {}",
+            model,
+            starts.len(),
+            counts.iter().map(|c| format!("{c:>14}")).collect::<String>(),
+            if *spectral { "yes" } else { "no" }
+        );
+    }
+    println!("{:<24} {:>6}  {}", "all", all, totals.iter().map(|c| format!("{c:>14}")).collect::<String>());
+    Ok(())
 }
 
 /// Run `work` on each item on up to `workers` threads, in any order; returns the results in item order.
@@ -293,7 +377,7 @@ fn calibrate(args: &[String]) -> Result<(), String> {
     }
     let mut files = Vec::new();
     for input in &inputs {
-        raw_files(Path::new(input), &mut files);
+        raw_files(Path::new(input), CALIBRATE_FORMATS, &mut files);
     }
     files.sort();
     files.dedup();
@@ -1276,7 +1360,7 @@ mod raw_files_tests {
         assert!(std::process::Command::new("mkfifo").arg(a.join("pipe.nef")).status().unwrap().success());
         let started = std::time::Instant::now();
         let mut files = Vec::new();
-        raw_files(&dir, &mut files);
+        raw_files(&dir, super::CALIBRATE_FORMATS, &mut files);
         assert!(started.elapsed() < std::time::Duration::from_secs(10), "walk took {:?}", started.elapsed());
         assert_eq!(files, vec![a.join("one.NEF")]);
         let _ = std::fs::remove_dir_all(&dir);

@@ -25,7 +25,7 @@ mod pairs;
 mod proxy;
 mod tone;
 
-pub(crate) use check::{delta_e_as_black_and_white, delta_e_to_camera_jpeg};
+pub(crate) use check::{colour_start, delta_e_as_black_and_white, delta_e_to_camera_jpeg};
 #[cfg(test)]
 pub(crate) use colour::{PROFILE_PROXY, dng_colour, dng_tone_eligible};
 #[cfg(test)]
