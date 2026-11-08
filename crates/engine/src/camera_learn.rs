@@ -335,7 +335,7 @@ fn needs(total: &Tally) -> Option<String> {
     if total.photos > 0 && total.colour == 0 {
         Some("all of these photos are black and white: colour can only be learned from colour photos of this camera".into())
     } else if total.colour_days < MIN_DAYS || total.colour < MIN_FILES * 2 {
-        Some(format!("photos from at least {MIN_DAYS} different days are needed, not counting black-and-white ones ({} found)", total.colour_days))
+        Some(format!("photos from at least {MIN_DAYS} different days are needed ({} so far)", total.colour_days))
     } else {
         None
     }

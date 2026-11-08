@@ -211,6 +211,5 @@ pub(super) fn only_shows(dlg: &Dialog) -> bool {
             | Dialog::Welcome { .. }
             | Dialog::ManageEffects { .. }
             | Dialog::ViewOptions
-            | Dialog::CameraColour
     ) || matches!(dlg, Dialog::SynchronizeFolder { counts: Some(c), .. } if c.up_to_date())
 }

@@ -532,7 +532,7 @@ fn cancel_label(dlg: &Dialog, sam: &SamState) -> &'static str {
     match dlg {
         Dialog::SamModel { .. } if sam.running || sam.installed || sam.by_hand => "Close",
         Dialog::SamModel { .. } | Dialog::LensDatabase { .. } => "Not Now",
-        Dialog::LightroomResult { .. } => "Close",
+        Dialog::LightroomResult { .. } | Dialog::CameraColour => "Close",
         _ => "Cancel",
     }
 }
@@ -594,6 +594,8 @@ fn fixed_ok_label(app: &LightcraftApp, dlg: &Dialog, informational: bool) -> &'s
         }
         Dialog::RenameAlbum { .. } | Dialog::Rename { .. } | Dialog::RenameKeyword { .. } => "Rename",
         Dialog::AutoStack { .. } => "Create Stacks",
+        Dialog::CameraColour if app.session.camera_learn.report().stage == lightcraft_engine::camera_learn::Stage::Done => "Learn Again",
+        Dialog::CameraColour => "Learn",
         Dialog::CaptureTime { .. } => "Change Time",
         Dialog::Cull { .. } => "Cull",
         Dialog::CopySettings { .. } => "Copy",
@@ -621,7 +623,6 @@ fn fixed_ok_label(app: &LightcraftApp, dlg: &Dialog, informational: bool) -> &'s
         | Dialog::SystemInfo { .. }
         | Dialog::AllMetadata { .. }
         | Dialog::WhatsNew
-        | Dialog::CameraColour
         | Dialog::ManageEffects { .. }
         | Dialog::ViewOptions
         | Dialog::LightroomResult { .. }
@@ -654,9 +655,10 @@ fn can_confirm(app: &LightcraftApp, dlg: &Dialog, informational: bool) -> bool {
         dlg,
         Dialog::DenoiseModel { accepted: false, .. } | Dialog::FaceModel { accepted: false, .. } | Dialog::SynchronizeFolder { counts: None, .. }
     );
+    let cannot_learn = matches!(dlg, Dialog::CameraColour) && !camera_colour::can_learn(app);
     let bad_rules =
         matches!(dlg, Dialog::SmartRules { id, rules, .. } if !rules.check_for(&app.session.catalog, id.map(lightcraft_catalog::AlbumId)).is_empty());
-    !rename_blocked && (informational || (!waiting && !bad_rules))
+    !rename_blocked && !cannot_learn && (informational || (!waiting && !bad_rules))
 }
 
 /// The row of buttons under a dialog: Cancel and the confirm; `close` and `confirm` are set when one is clicked.
@@ -813,7 +815,8 @@ fn prompt_verb(command: &str) -> &'static str {
 /// Whether a dialog stays open after its action succeeded (the SAM 3 dialog while the model
 /// downloads).
 pub fn keeps_open(app: &LightcraftApp, dlg: &Dialog) -> bool {
-    matches!(dlg, Dialog::SamModel { .. }) && !app.session.segmenter.installed()
+    // (Improve Camera Colour shows its learning and what it did)
+    (matches!(dlg, Dialog::SamModel { .. }) && !app.session.segmenter.installed()) || matches!(dlg, Dialog::CameraColour)
 }
 
 /// The body of the AutoStack dialog.
